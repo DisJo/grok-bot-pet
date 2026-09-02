@@ -1,0 +1,66 @@
+{
+  "name": "codex-emotion-pet",
+  "version": "0.1.5",
+  "description": "A macOS floating emotion pet for Codex task activity",
+  "keywords": [
+    "macos",
+    "electron",
+    "codex",
+    "codex-cli",
+    "desktop-pet",
+    "menu-bar-app",
+    "grok-bot",
+    "svg-animation",
+    "developer-tools",
+    "typescript"
+  ],
+  "main": "dist-electron/main.js",
+  "author": "Grok Bot Pet",
+  "license": "MIT",
+  "scripts": {
+    "build:native": "node scripts/build-native-window-bridge.mjs",
+    "predev": "npm run build:native",
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "npm run build:native && npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:mac:dev": "npm run build && electron-builder --mac dir --arm64",
+    "build:mac": "npm run build && electron-builder --mac dir --universal -c.forceCodeSigning=true && node scripts/package-mac-distribution.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "lucide-react": "1.37.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.1",
+    "concurrently": "10.0.5",
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "4.1.11",
+    "wait-on": "9.1.0",
+    "@types/node": "26.4.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5"
+  },
+  "build": {
+    "appId": "com.codex.emotionpet",
+    "productName": "Grok Bot Pet",
+    "directories": { "output": "release" },
+    "files": ["dist", "dist-electron", "package.json"],
+    "extraResources": [{ "from": "build/tray-logo.png", "to": "tray-logo.png" }, { "from": "build/native/window-bridge.node", "to": "native/window-bridge.node" }],
+    "mac": {
+      "target": ["dir"],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": false
+    }
+  }
+}

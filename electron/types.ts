@@ -1,0 +1,9 @@
+export type CodexTaskStatus = "offline" | "idle" | "receiving" | "processing" | "waiting-input" | "completed" | "error" | "stopped";
+export type CodexActivityKind = "user-message" | "reasoning" | "plan" | "web-search" | "command" | "file-change" | "tool-call" | "collaboration" | "agent-output" | "context-compaction" | "approval" | "error";
+export interface CodexActivitySignal { kind: CodexActivityKind; phase: "started" | "progress" | "completed" | "failed" | "declined"; at: number; itemId?: string; }
+export interface CodexTask { threadId: string; parentThreadId?: string; title: string; cwd?: string; sourceKind?: string; status: CodexTaskStatus; activeFlags: string[]; turnId?: string; updatedAt: number; startedAt?: number; emotionHint?: string; emotionHintAt?: number; activity?: CodexActivitySignal; }
+export interface CodexOverview { connected: boolean; connectionMode?: "app-server" | "local-inference"; activeCount: number; hasWaiting: boolean; selectedTask?: CodexTask; recentTasks: CodexTask[]; lastError?: string; }
+export type GrokShape = "blob" | "pebble" | "bean" | "egg" | "squircle" | "tablet" | "capsule" | "cylinder" | "hex" | "gem" | "crystal" | "wedge" | "shield" | "dome" | "arch" | "cloud" | "teardrop" | "leaf";
+export type GrokColor = "black" | "gray" | "brown" | "red" | "orange" | "yellow" | "green" | "cyan" | "blue" | "violet" | "magenta";
+export type StatusColorRole = "completed" | "error" | "stopped" | "waiting";
+export interface PetSettings { settingsVersion: number; launchAtLogin: boolean; alwaysOnTop: boolean; opacity: number; activeOnly: boolean; pointerFollowing: boolean; showBadge: boolean; shadowsEnabled: boolean; characterSize: number; bodyColor: GrokColor; eyeColor: string; autoShape: boolean; fixedShape: GrokShape; clickInteractions: boolean; statusColorsEnabled: boolean; statusColors: Record<StatusColorRole, GrokColor>; }

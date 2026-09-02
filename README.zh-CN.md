@@ -86,6 +86,8 @@ npm run build:mac
 
 完整说明请参阅 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。
 
-## 参与贡献
+## 免责声明
 
-欢迎提交 Issue 和 Pull Request。提交前请运行 `npm run typecheck`、`npm test` 和 `npm run build`。
+- 本仓库仅供学习与研究参考，不授予任何商业使用或再分发权限。
+- 仓库所涉角色造型、名称与商标、图标、视觉元素、几何数据，以及从应用包提取的任何内容，均归 xAI 或相应权利人所有。
+- 未经相关权利人明确授权，请勿将上述内容用于商业目的、再分发，或作为自己的商标、原创素材或作品对外发布。

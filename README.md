@@ -87,6 +87,8 @@ The [MIT License](LICENSE) applies only to this project's original implementatio
 
 See [Third-Party Notices](THIRD_PARTY_NOTICES.md) for the complete notice.
 
-## Contributing
+## Disclaimer
 
-Issues and pull requests are welcome. Please run `npm run typecheck`, `npm test`, and `npm run build` before submitting changes.
+- This repository is provided solely for learning and research. It grants no permission for commercial use or redistribution.
+- All character designs, names and trademarks, icons, visual elements, geometry data, and any material extracted from application bundles belong to xAI or the applicable rights holders.
+- Without express authorization from the applicable rights holders, do not use the above material commercially, redistribute it, or present it publicly as your own trademark, original asset, or work.

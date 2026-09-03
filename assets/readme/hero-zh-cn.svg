@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">Grok Bot Pet</title>
+  <desc id="desc">将 Codex 本地活动转化为动画宠物状态的 macOS 桌面伴侣。</desc>
+  <defs>
+    <linearGradient id="background" x1="40" y1="20" x2="1160" y2="380" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#11151d"/>
+      <stop offset="1" stop-color="#080a0e"/>
+    </linearGradient>
+    <linearGradient id="stage" x1="820" y1="54" x2="1110" y2="306" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9e7e1"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="398" rx="30" fill="url(#background)" stroke="#303744" stroke-width="2"/>
+  <path d="M64 286H708" stroke="#2c323d" stroke-width="2"/>
+
+  <g id="title-block" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="64" y="61" fill="#8ff0b0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="2">本地 CODEX 活动 · MACOS</text>
+    <text x="64" y="137" fill="#f7f8fa" font-size="70" font-weight="760" letter-spacing="-2">Grok Bot Pet</text>
+    <text x="64" y="185" fill="#c7ccd5" font-size="27" font-weight="500">无需反复打开 Codex，也能看见 Agent 正在</text>
+    <text x="64" y="222" fill="#c7ccd5" font-size="27" font-weight="500">思考、搜索、编辑、等待、完成或失败。</text>
+    <text x="64" y="260" fill="#818997" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">只读观察 · 数据留在本机 · 桌面常驻</text>
+  </g>
+
+  <g id="pet-stage">
+    <rect x="772" y="34" width="364" height="266" rx="34" fill="url(#stage)" stroke="#ffffff" stroke-opacity=".9" stroke-width="2"/>
+    <circle cx="807" cy="68" r="7" fill="#ff6b78"/>
+    <circle cx="832" cy="68" r="7" fill="#ffd66b"/>
+    <circle cx="857" cy="68" r="7" fill="#8ff0b0"/>
+    <text x="1100" y="74" text-anchor="end" fill="#6f7680" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" font-weight="700">实时</text>
+    <ellipse cx="955" cy="269" rx="102" ry="14" fill="#1c2028" opacity=".13"/>
+    <path d="M952 95C887 86 828 125 817 190C805 259 860 292 930 294C1004 297 1077 268 1082 198C1088 126 1022 86 952 95Z" fill="#08090b"/>
+    <rect x="898" y="146" width="31" height="80" rx="16" fill="#f6f2e9" transform="rotate(-18 914 186)"/>
+    <rect x="976" y="140" width="31" height="80" rx="16" fill="#f6f2e9" transform="rotate(-18 992 180)"/>
+    <circle cx="884" cy="117" r="8" fill="#459ffe"/>
+    <circle cx="1055" cy="118" r="8" fill="#ff77be"/>
+    <circle cx="1083" cy="245" r="8" fill="#8ff0b0"/>
+    <path d="M884 117C906 101 928 99 949 102M1055 118C1038 103 1015 98 993 100M1083 245C1065 263 1046 274 1025 280" fill="none" stroke="#9198a4" stroke-width="2" stroke-dasharray="5 7"/>
+  </g>
+
+  <g id="state-strip" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="18" font-weight="700">
+    <g transform="translate(64 326)"><rect width="168" height="42" rx="13" fill="#181d26" stroke="#303744"/><circle cx="22" cy="21" r="6" fill="#459ffe"/><text x="38" y="27" fill="#dce0e6">思考</text></g>
+    <g transform="translate(244 326)"><rect width="168" height="42" rx="13" fill="#181d26" stroke="#303744"/><circle cx="22" cy="21" r="6" fill="#35c3bd"/><text x="38" y="27" fill="#dce0e6">搜索</text></g>
+    <g transform="translate(424 326)"><rect width="168" height="42" rx="13" fill="#181d26" stroke="#303744"/><circle cx="22" cy="21" r="6" fill="#ff77be"/><text x="38" y="27" fill="#dce0e6">编辑</text></g>
+    <g transform="translate(604 326)"><rect width="168" height="42" rx="13" fill="#181d26" stroke="#303744"/><circle cx="22" cy="21" r="6" fill="#ffd66b"/><text x="38" y="27" fill="#dce0e6">等待</text></g>
+    <g transform="translate(784 326)"><rect width="168" height="42" rx="13" fill="#181d26" stroke="#303744"/><circle cx="22" cy="21" r="6" fill="#8ff0b0"/><text x="38" y="27" fill="#dce0e6">完成</text></g>
+    <g transform="translate(964 326)"><rect width="168" height="42" rx="13" fill="#181d26" stroke="#303744"/><circle cx="22" cy="21" r="6" fill="#ff6b78"/><text x="38" y="27" fill="#dce0e6">失败</text></g>
+  </g>
+</svg>

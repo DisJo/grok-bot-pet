@@ -1,58 +1,75 @@
-<div align="center">
-  <h1>Grok Bot Pet</h1>
-  <p><strong>运行在 macOS 桌面的 Codex 动画宠物。</strong></p>
-  <p>无需反复打开任务窗口，也能看见 Agent 正在思考、搜索、编辑、等待、完成或出错。</p>
-  <p><a href="README.md">English</a> · <strong>简体中文</strong></p>
-  <p>
-    <code>macOS</code> <code>Electron</code> <code>Codex</code> <code>Codex CLI</code>
-    <code>桌面宠物</code> <code>状态栏应用</code> <code>Grok Bot</code>
-    <code>SVG 动画</code> <code>TypeScript</code>
-  </p>
-</div>
+<p align="center">
+  <img src="./assets/readme/hero-zh-cn.svg" width="100%" alt="Grok Bot Pet 将 Codex 本地活动转化为富有表现力的 macOS 桌面宠物">
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <strong>简体中文</strong>
+</p>
+
+<p align="center">
+  <code>macOS 13+</code>&nbsp;&nbsp;<code>本地优先</code>&nbsp;&nbsp;<code>只读观察</code>&nbsp;&nbsp;<code>Electron</code>&nbsp;&nbsp;<code>TypeScript</code>
+</p>
 
 > [!NOTE]
 > Grok Bot Pet 是非官方社区项目。角色概念、视觉语言和核心动画机制来源于并参考了 **Grok Bot**，与 OpenAI、xAI 不存在隶属、背书或赞助关系。
 
-## 它能做什么
+## 一眼看懂 Codex 状态
 
-Grok Bot Pet 会把本机 Codex 活动转换成一个常驻 macOS 桌面的动态角色。桌面只显示宠物，任务、控制和自定义选项集中在系统状态栏中。
+Grok Bot Pet 会把本机 Codex 桌面端和 CLI 的活动转换成常驻 macOS 桌面的动态角色。宠物始终可见，任务、控制和自定义选项则安静地收在系统状态栏中。
 
-它可以观察 Codex 桌面端和 CLI 的活动，并对推理、搜索、命令、文件修改、审批、回复、完成、失败和中断作出动画反应。
-
-## 主要特点
-
-- 透明无边框、可拖动、始终置顶，并可跨桌面和全屏空间显示。
-- 通过表情、形状、颜色、粒子、丝带和动作反馈任务状态。
-- 在系统状态栏查看任务、刷新连接和自定义角色。
-- 可调整尺寸、透明度、身体及眼睛颜色、形状、阴影、角标、动画和鼠标跟随。
-- 只读观察，不会创建、中断、删除、审批任务，也不会代替用户回复。
-- 数据保留在 Mac 本地，不会把任务内容上传到第三方服务。
-
-## 系统要求
-
-- macOS 13 或更高版本
-- Apple Silicon 或 Intel Mac
-- Codex macOS 桌面端、Codex CLI 或兼容的 Codex 安装
+| Codex 信号 | 宠物反应 |
+| --- | --- |
+| 推理或规划 | 思考并展示进度 |
+| 网页搜索 | 扫描和搜索 |
+| 命令与工具 | 工作、加载和环绕 |
+| 文件修改 | 书写和上传 |
+| 等待批准或输入 | 倾听并等待 |
+| Agent 回复 | 口述并发送 |
+| 任务完成 | 庆祝 |
+| 任务失败 | 警示、应激并变得难过 |
+| 任务中断 | 逐步关机 |
 
 ## 安装
 
-1. 从 [GitHub Releases](../../releases) 页面下载最新 Universal `.dmg` 或 `.zip`。
+1. 从 [GitHub Releases](../../releases) 下载最新 Universal `.dmg` 或 `.zip`。
 2. 将 **Grok Bot Pet.app** 移入 `/Applications`。
-3. 启动 App，并通过 macOS 系统状态栏图标使用。
+3. 启动 App，通过 macOS 系统状态栏中的宠物图标使用。
 
 正式发布的安装包已使用 Apple Developer ID 签名并通过 Apple 公证。首次启动时，macOS 仍可能显示标准的“从互联网下载”确认提示。
 
-对外分享时请发送生成的 `.dmg` 或 `.zip`，不要直接发送裸 `.app`；部分聊天软件和网盘可能破坏未打包的 App Bundle。
+> [!TIP]
+> 对外分享时请发送打包好的 `.dmg` 或 `.zip`，不要直接发送裸 `.app`；部分聊天软件和网盘可能破坏未打包的 App Bundle。
 
-## 使用方式
+## 自然融入 macOS 桌面
 
-点击状态栏图标可以查看任务、刷新识别、打开 Codex 或自定义角色。点击宠物会随机互动，拖动可调整位置，待机时眼睛可以跟随鼠标指针。
+- 透明无边框、可拖动、始终置顶。
+- 可跨 macOS 桌面空间和全屏应用显示。
+- 用形状、颜色、粒子、丝带和动作反馈任务状态。
+- 在系统状态栏查看任务、控制连接并自定义角色。
+- 可调整尺寸、透明度、身体及眼睛颜色、形状、阴影、角标、动画和鼠标跟随。
+- 点击宠物可以触发轻量的随机互动。
 
-App 会优先连接本机 Codex 服务，也会使用本地会话信息补充 CLI 任务识别。不同 Codex 版本能提供的状态细节可能有所不同。
+## 工作方式
+
+```text
+Codex 桌面端 / CLI
+        ↓
+本地 App Server + 会话信息
+        ↓
+活动与任务状态推断
+        ↓
+动画导演
+        ↓
+桌面悬浮宠物
+```
+
+App 会优先连接本机 Codex App Server，并使用本地 Codex 会话信息补充 CLI 任务识别。不同 Codex 版本能提供的状态细节可能有所不同。
+
+Grok Bot Pet 只观察活动，不会创建、中断、删除或批准任务，也不会代替用户回复。
 
 ## 从源码运行
 
-从源码构建需要当前 Node.js LTS 版本和 Xcode Command Line Tools（未安装时运行 `xcode-select --install`）。命令行工具用于编译原生 macOS 窗口桥接模块。
+你需要当前 Node.js LTS 版本和 Xcode Command Line Tools。尚未安装时可运行 `xcode-select --install`；命令行工具用于编译原生 macOS 窗口桥接模块。
 
 ```bash
 npm ci
@@ -68,13 +85,13 @@ npm run build
 npm run build:mac
 ```
 
-## 隐私与限制
+## 系统要求与限制
 
-- Grok Bot Pet 不会上传任务内容。
+- 支持 Apple Silicon 和 Intel Mac，需要 macOS 13 或更高版本。
+- 需要 Codex macOS 桌面端、Codex CLI 或兼容的 Codex 安装。
 - 不需要屏幕录制或辅助功能权限。
-- App 只观察任务，不会控制审批或代替用户输入。
-- 目前仅支持 macOS。
 - 暂未实现自动更新，需要手动安装新版本。
+- Grok Bot Pet 不会把任务内容上传到第三方服务。
 
 ## 来源与知识产权
 

@@ -1,59 +1,75 @@
-<div align="center">
-  <h1>Grok Bot Pet</h1>
-  <p><strong>An animated macOS desktop companion for Codex.</strong></p>
-  <p>See your agent think, search, edit, wait, finish, and fail — without reopening the task window.</p>
-  <p><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
-  <p>
-    <code>macOS</code> <code>Electron</code> <code>Codex</code> <code>Codex CLI</code>
-    <code>desktop pet</code> <code>menu bar app</code> <code>Grok Bot</code>
-    <code>SVG animation</code> <code>TypeScript</code>
-  </p>
-</div>
+<p align="center">
+  <img src="./assets/readme/hero-en.svg" width="100%" alt="Grok Bot Pet turns local Codex activity into an expressive macOS desktop companion">
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <code>macOS 13+</code>&nbsp;&nbsp;<code>Local-first</code>&nbsp;&nbsp;<code>Read-only</code>&nbsp;&nbsp;<code>Electron</code>&nbsp;&nbsp;<code>TypeScript</code>
+</p>
 
 > [!NOTE]
 > Grok Bot Pet is an unofficial community project. Its character concept, visual language, and core animation behavior originate from and are inspired by **Grok Bot**. It is not affiliated with, endorsed by, or sponsored by OpenAI or xAI.
 
-## What it does
+## See Codex at a glance
 
-Grok Bot Pet turns local Codex activity into an expressive character that lives directly on your macOS desktop. The desktop shows only the pet; tasks, controls, and customization stay in the menu bar.
+Grok Bot Pet translates local Codex desktop and CLI activity into a character that lives directly on your macOS desktop. The pet stays visible while tasks, controls, and customization remain tucked into the menu bar.
 
-It observes Codex desktop and CLI activity and reacts to reasoning, searches, commands, file edits, approvals, replies, completion, failure, and interruption.
-
-## Highlights
-
-- Transparent, frameless, draggable, always-on-top desktop character.
-- Visible across macOS Spaces and full-screen desktops.
-- Task-aware expressions, shapes, colors, particles, ribbons, and motion.
-- Menu bar access to current tasks, connection controls, and customization.
-- Adjustable size, opacity, body and eye colors, shapes, shadows, badges, animation, and pointer following.
-- Read-only observation: it never creates, interrupts, deletes, approves, or replies to a Codex task.
-- Local-first: task content is not uploaded to a third-party service.
-
-## Requirements
-
-- macOS 13 or later
-- Apple Silicon or Intel Mac
-- Codex for macOS, Codex CLI, or a compatible Codex installation
+| Codex signal | What the pet does |
+| --- | --- |
+| Reasoning or planning | Thinks and shows progress |
+| Web search | Scans and searches |
+| Commands and tools | Works, loads, and orbits |
+| File changes | Writes and uploads |
+| Approval or input needed | Listens and waits |
+| Agent reply | Dictates and sends |
+| Task completed | Celebrates |
+| Task failed | Alerts, reacts, and becomes sad |
+| Task interrupted | Powers down |
 
 ## Install
 
-1. Download the latest Universal `.dmg` or `.zip` from the [GitHub Releases](../../releases) page.
+1. Download the latest Universal `.dmg` or `.zip` from [GitHub Releases](../../releases).
 2. Move **Grok Bot Pet.app** to `/Applications`.
-3. Open the app and use its icon in the macOS menu bar.
+3. Launch the app and use the pet icon in the macOS menu bar.
 
-Published release builds are signed with an Apple Developer ID and notarized by Apple. macOS may still show its standard confirmation that the app was downloaded from the internet on first launch.
+Release builds are signed with an Apple Developer ID and notarized by Apple. macOS may still show its standard downloaded-app confirmation the first time you open it.
 
-Share the generated `.dmg` or `.zip`, not a bare `.app`; some chat and cloud services can damage an unpackaged app bundle.
+> [!TIP]
+> Share the packaged `.dmg` or `.zip`, not a bare `.app`. Some chat and cloud services can damage an unpackaged App Bundle.
 
-## Using the pet
+## Why it feels at home on your desktop
 
-Click the menu bar icon to view tasks, refresh detection, open Codex, or customize the character. Click the pet for a random interaction, drag it anywhere on the desktop, and let its eyes follow the pointer while idle.
+- Transparent, frameless, draggable, and always on top.
+- Visible across macOS Spaces and full-screen desktops.
+- Expressive shapes, colors, particles, ribbons, and motion for task state.
+- Menu bar access to current tasks, connection controls, and customization.
+- Adjustable size, opacity, body and eye colors, shape, shadow, badge, animation, and pointer following.
+- Click interactions for small moments of personality between tasks.
+
+## How it works
+
+```text
+Codex desktop / CLI
+        ↓
+local App Server + session information
+        ↓
+activity and task-state inference
+        ↓
+animation director
+        ↓
+floating desktop pet
+```
 
 The app uses the local Codex App Server when available and falls back to local Codex session information for CLI visibility. Detection detail can vary by Codex version.
 
+Grok Bot Pet only observes activity. It never creates, interrupts, deletes, approves, or replies to a Codex task.
+
 ## Run from source
 
-Source builds require a current Node.js LTS release and Xcode Command Line Tools (run `xcode-select --install` if they are not installed). The command-line tools compile the native macOS window bridge.
+You need a current Node.js LTS release and Xcode Command Line Tools. Install the command-line tools with `xcode-select --install` if needed; they compile the native macOS window bridge.
 
 ```bash
 npm ci
@@ -69,13 +85,13 @@ npm run build
 npm run build:mac
 ```
 
-## Privacy and limitations
+## Requirements and limits
 
-- No task content is uploaded by Grok Bot Pet.
-- No screen recording or Accessibility permission is required.
-- The app observes tasks but does not control approvals or user input.
-- macOS only.
-- Automatic updates are not implemented yet; install new releases manually.
+- macOS 13 or later on Apple Silicon or Intel Mac.
+- Codex for macOS, Codex CLI, or a compatible Codex installation.
+- No screen recording or Accessibility permission required.
+- No automatic updates yet; install new releases manually.
+- Task content is not uploaded to a third-party service by Grok Bot Pet.
 
 ## Attribution and intellectual property
 

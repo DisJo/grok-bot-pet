@@ -197,6 +197,13 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
       if (type === "task_complete") {
         state.openTurn = false;
         state.turnId = payload.turn_id || state.turnId;
+        if (payload.error != null) {
+          state.awaitingPlanConfirmation = false;
+          state.terminalStatus = "error";
+          state.lastActivity = { kind: "error", phase: "failed", at, itemId: state.turnId };
+          state.emotionHint = "error";
+          continue;
+        }
         if (state.awaitingPlanConfirmation) {
           state.terminalStatus = "waiting-input";
           state.emotionHint = "waiting";
@@ -326,7 +333,12 @@ async function readLastLifecycle(file: string, size: number): Promise<Partial<Se
       const payload = record.payload || {};
       const type = String(payload.type || "").toLowerCase();
       const at = normalizeTimestamp(record.timestamp);
-      if (type === "task_complete") return { openTurn: false, turnId: payload.turn_id, terminalStatus: "completed", lastEventAt: at };
+      if (type === "task_complete") return {
+        openTurn: false,
+        turnId: payload.turn_id,
+        terminalStatus: payload.error == null ? "completed" : "error",
+        lastEventAt: at
+      };
       if (/aborted|interrupted|cancelled|canceled|stopped/.test(type)) return { openTurn: false, turnId: payload.turn_id, terminalStatus: "stopped", lastEventAt: at };
       if (type === "task_started") return {
         openTurn: true,

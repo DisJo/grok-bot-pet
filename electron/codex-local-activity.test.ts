@@ -125,6 +125,22 @@ describe("local Codex activity inference", () => {
     expect(stopped.terminalStatus).toBe("stopped");
   });
 
+  it("maps any task completion with an error payload to terminal error", () => {
+    const failed = parseLocalSessionLines([
+      line("2026-09-01T00:00:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-error" }),
+      line("2026-09-01T00:00:02.000Z", "event_msg", {
+        type: "task_complete",
+        turn_id: "turn-error",
+        error: { message: "An OpenAI request failed", codex_error_info: "future_error_code" }
+      })
+    ]);
+
+    expect(failed.openTurn).toBe(false);
+    expect(failed.terminalStatus).toBe("error");
+    expect(failed.lastActivity).toMatchObject({ kind: "error", phase: "failed" });
+    expect(failed.emotionHint).toBe("error");
+  });
+
   it("keeps a completed plan waiting until the user starts another turn", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CodexBridge, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, selectTasks } from "./codex-bridge";
+import { CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, selectTasks } from "./codex-bridge";
+import { JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { CodexTask } from "./types";
 
 describe("Codex status mapping", () => {
@@ -116,9 +117,53 @@ describe("App Server event dispatch", () => {
 
     expect(calls).toEqual([{ codexCli: "/codex", codexHome: "/codex-home" }]);
     expect(transports).toEqual([
-      ["app-server", "proxy", "--sock", "/codex-home/app-server-control/app-server-control.sock"],
-      ["app-server", "--listen", "stdio://"]
+      { kind: "daemon", socketPath: "/codex-home/app-server-control/app-server-control.sock" },
+      { kind: "stdio", args: ["app-server", "--listen", "stdio://"] }
     ]);
+  });
+
+  it("falls back to a working stdio transport when the daemon connection fails", async () => {
+    const attempts: string[] = [];
+    const bridge = bridgeWithTransports({
+      resolveAppServerTransports: async () => [
+        { kind: "daemon", socketPath: "/missing.sock" },
+        { kind: "stdio", args: ["app-server", "--listen", "stdio://"] }
+      ],
+      connectUnixSocketWebSocket: async () => {
+        attempts.push("daemon");
+        throw new Error("daemon unavailable");
+      },
+      connectStdioJsonRpc: async (_command, _args, _env, handlers) => {
+        attempts.push("stdio");
+        return respondingTransport(handlers);
+      }
+    });
+
+    await (bridge as any).connect();
+
+    expect(attempts).toEqual(["daemon", "stdio"]);
+    expect(bridge.overview()).toMatchObject({ connected: true, connectionMode: "app-server" });
+    bridge.stop();
+  });
+
+  it("does not publish a connection that finishes after stop", async () => {
+    let finishResolution!: (value: any) => void;
+    let daemonConnections = 0;
+    const bridge = bridgeWithTransports({
+      resolveAppServerTransports: () => new Promise((resolve) => { finishResolution = resolve; }),
+      connectUnixSocketWebSocket: async () => {
+        daemonConnections += 1;
+        throw new Error("must not connect");
+      }
+    });
+
+    const connecting = (bridge as any).connect();
+    bridge.stop();
+    finishResolution([{ kind: "daemon", socketPath: "/daemon.sock" }]);
+    await connecting;
+
+    expect(daemonConnections).toBe(0);
+    expect(bridge.overview().connected).toBe(false);
   });
 
   it("distinguishes a server request from a client response", () => {
@@ -295,4 +340,23 @@ function writeGoalFixture(root: string, status: string) {
   } finally {
     db.close();
   }
+}
+
+function bridgeWithTransports(overrides: Partial<CodexBridgeDependencies>) {
+  return new CodexBridge("/tmp/codex-transport-test", undefined, {
+    discoverCodexCliCandidates: () => ["/codex"],
+    ...overrides
+  });
+}
+
+function respondingTransport(handlers: JsonRpcTransportHandlers): JsonRpcTransport {
+  return {
+    send(message) {
+      const request = JSON.parse(message);
+      if (request.id !== undefined) {
+        queueMicrotask(() => handlers.onMessage(JSON.stringify({ id: request.id, result: {} })));
+      }
+    },
+    close() {}
+  };
 }

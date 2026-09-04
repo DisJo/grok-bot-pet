@@ -24,7 +24,7 @@
     "build": "npm run build:native && npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "build:mac:dev": "npm run build && electron-builder --mac dir --arm64",
+    "build:mac:dev": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir --arm64",
     "build:mac": "npm run build && electron-builder --mac dir --universal -c.forceCodeSigning=true && node scripts/package-mac-distribution.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
@@ -32,7 +32,8 @@
   "dependencies": {
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "lucide-react": "1.37.0"
+    "lucide-react": "1.37.0",
+    "ws": "8.18.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "6.1.1",
@@ -45,7 +46,8 @@
     "wait-on": "9.1.0",
     "@types/node": "26.4.0",
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.5"
+    "@types/react-dom": "19.2.5",
+    "@types/ws": "8.18.1"
   },
   "build": {
     "appId": "com.codex.emotionpet",

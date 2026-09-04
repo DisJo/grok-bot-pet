@@ -69,14 +69,14 @@ describe("shared Codex daemon preparation", () => {
 describe("App Server transport preference", () => {
   it("falls back to stdio when daemon preparation fails", () => {
     expect(appServerTransports("/daemon.sock", false)).toEqual([
-      ["app-server", "--listen", "stdio://"]
+      { kind: "stdio", args: ["app-server", "--listen", "stdio://"] }
     ]);
   });
 
-  it("prefers the daemon proxy and retains stdio fallback when ready", () => {
+  it("prefers the daemon WebSocket and retains stdio fallback when ready", () => {
     expect(appServerTransports("/daemon.sock", true)).toEqual([
-      ["app-server", "proxy", "--sock", "/daemon.sock"],
-      ["app-server", "--listen", "stdio://"]
+      { kind: "daemon", socketPath: "/daemon.sock" },
+      { kind: "stdio", args: ["app-server", "--listen", "stdio://"] }
     ]);
   });
 });

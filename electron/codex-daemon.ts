@@ -17,6 +17,10 @@ export interface SharedDaemonOptions {
   run?: CommandRunner;
 }
 
+export type AppServerTransportSpec =
+  | { kind: "daemon"; socketPath: string }
+  | { kind: "stdio"; args: string[] };
+
 export async function prepareSharedCodexDaemon(options: SharedDaemonOptions) {
   if ((options.platform ?? process.platform) !== "darwin") return false;
   const run = options.run ?? runCommand;
@@ -30,10 +34,10 @@ export async function prepareSharedCodexDaemon(options: SharedDaemonOptions) {
   });
 }
 
-export function appServerTransports(socket: string, daemonReady: boolean): string[][] {
-  const stdio = ["app-server", "--listen", "stdio://"];
+export function appServerTransports(socket: string, daemonReady: boolean): AppServerTransportSpec[] {
+  const stdio: AppServerTransportSpec = { kind: "stdio", args: ["app-server", "--listen", "stdio://"] };
   return daemonReady
-    ? [["app-server", "proxy", "--sock", socket], stdio]
+    ? [{ kind: "daemon", socketPath: socket }, stdio]
     : [stdio];
 }
 

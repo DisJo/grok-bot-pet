@@ -1,5 +1,3 @@
-import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, Interface } from "node:readline";
 import { accessSync, constants, readdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
@@ -8,13 +6,20 @@ import { CodexActivityKind, CodexActivitySignal, CodexOverview, CodexTask, Codex
 import { CodexLocalActivityReader } from "./codex-local-activity";
 import { localizedCopy, LocalizedDataCopy } from "./localization";
 import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
+import { connectStdioJsonRpc, connectUnixSocketWebSocket, JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
 
+export interface CodexBridgeDependencies {
+  discoverCodexCliCandidates?: () => string[];
+  resolveAppServerTransports?: typeof resolveAppServerTransports;
+  connectUnixSocketWebSocket?: typeof connectUnixSocketWebSocket;
+  connectStdioJsonRpc?: typeof connectStdioJsonRpc;
+}
+
 export class CodexBridge extends EventEmitter {
-  private child?: ChildProcessWithoutNullStreams;
-  private lines?: Interface;
+  private transport?: JsonRpcTransport;
   private nextId = 1;
   private pending = new Map<number | string, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private tasks = new Map<string, CodexTask>();
@@ -25,12 +30,14 @@ export class CodexBridge extends EventEmitter {
   private stopped = false;
   private subscribedThreads = new Set<string>();
   private connecting?: Promise<void>;
+  private connectionGeneration = 0;
   private localInferenceAvailable = false;
   private readonly localActivity: CodexLocalActivityReader;
 
   constructor(
     private readonly codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
-    private readonly copy: LocalizedDataCopy = localizedCopy("en").data
+    private readonly copy: LocalizedDataCopy = localizedCopy("en").data,
+    private readonly dependencies: CodexBridgeDependencies = {}
   ) {
     super();
     this.localActivity = new CodexLocalActivityReader([codexHome], copy.codexTask);
@@ -44,11 +51,17 @@ export class CodexBridge extends EventEmitter {
 
   stop() {
     this.stopped = true;
-    if (this.refreshTimer) clearInterval(this.refreshTimer);
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.lines?.close();
-    this.child?.kill();
-    this.child = undefined;
+    this.connectionGeneration += 1;
+    if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = undefined; }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
+    const transport = this.transport;
+    this.transport = undefined;
+    this.connecting = undefined;
+    this.connected = false;
+    this.localInferenceAvailable = false;
+    this.subscribedThreads.clear();
+    this.rejectPending(new Error(this.copy.disconnected));
+    transport?.close();
   }
 
   overview(): CodexOverview { return this.makeOverview(); }
@@ -100,44 +113,82 @@ export class CodexBridge extends EventEmitter {
   private connect() {
     if (this.connected || this.stopped) return Promise.resolve();
     if (this.connecting) return this.connecting;
-    this.connecting = this.connectOnce().finally(() => { this.connecting = undefined; });
-    return this.connecting;
+    const generation = this.connectionGeneration;
+    const attempt = this.connectOnce(generation);
+    this.connecting = attempt;
+    const clear = () => { if (this.connecting === attempt) this.connecting = undefined; };
+    void attempt.then(clear, clear);
+    return attempt;
   }
 
-  private async connectOnce() {
-    const commands = discoverCodexCliCandidates();
+  private async connectOnce(generation: number) {
+    const commands = (this.dependencies.discoverCodexCliCandidates ?? discoverCodexCliCandidates)();
     if (!commands.length) {
       this.lastError = this.copy.codexMissing;
       this.emitOverview();
       return;
     }
     for (const command of commands) {
-      const transports = await resolveAppServerTransports(command, this.codexHome);
-      for (const args of transports) {
+      if (!this.isConnectionCurrent(generation)) return;
+      let transports;
+      try {
+        transports = await (this.dependencies.resolveAppServerTransports ?? resolveAppServerTransports)(command, this.codexHome);
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        continue;
+      }
+      if (!this.isConnectionCurrent(generation)) return;
+      for (const spec of transports) {
+        if (!this.isConnectionCurrent(generation)) return;
+        let transport: JsonRpcTransport | undefined;
         try {
-          const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: homedir(), CODEX_HOME: this.codexHome } });
-          this.child = child;
-          this.lines = createInterface({ input: child.stdout });
-          this.lines.on("line", (line) => this.receive(line));
-          child.stderr.on("data", (buf) => {
-            const line = String(buf).trim();
-            if (line && !line.includes('"level":"WARN"')) this.lastError = line.slice(-500);
-          });
-          const spawnFailure = new Promise<never>((_, reject) => child.once("error", reject));
+          let ready = false;
+          let rejectConnection!: (error: Error) => void;
+          const connectionFailure = new Promise<never>((_, reject) => { rejectConnection = reject; });
+          void connectionFailure.catch(() => {});
+          const handlers: JsonRpcTransportHandlers = {
+            onMessage: (message) => this.receive(message),
+            onClose: () => {
+              if (!this.isConnectionCurrent(generation)) return;
+              if (ready && this.transport === transport) this.handleDisconnect(generation);
+              else if (!ready) rejectConnection(new Error(this.copy.disconnected));
+            },
+            onError: (error) => {
+              if (!this.isConnectionCurrent(generation)) return;
+              if (ready && this.transport === transport) { this.lastError = error.message; this.handleDisconnect(generation); }
+              else rejectConnection(error);
+            },
+            onDiagnostic: (message) => {
+              const line = message.trim();
+              if (line && !line.includes('"level":"WARN"')) this.lastError = line.slice(-500);
+            }
+          };
+          transport = spec.kind === "daemon"
+            ? await (this.dependencies.connectUnixSocketWebSocket ?? connectUnixSocketWebSocket)(spec.socketPath, handlers)
+            : await (this.dependencies.connectStdioJsonRpc ?? connectStdioJsonRpc)(command, spec.args, {
+              ...process.env,
+              HOME: homedir(),
+              CODEX_HOME: this.codexHome
+            }, handlers);
+          if (!this.isConnectionCurrent(generation)) { transport.close(); return; }
+          this.transport = transport;
           await Promise.race([
             this.request("initialize", { clientInfo: { name: "codex_emotion_pet", title: "Grok Bot Pet", version: "0.1.5" } }),
-            spawnFailure
+            connectionFailure
           ]);
+          if (!this.isConnectionCurrent(generation)) { transport.close(); return; }
           this.send({ method: "initialized", params: {} });
+          ready = true;
           this.connected = true;
           this.lastError = undefined;
-          child.once("exit", () => this.handleDisconnect());
-          child.once("error", (error) => { this.lastError = error.message; this.handleDisconnect(); });
           this.emitOverview();
           return;
         } catch (error) {
+          if (!this.isConnectionCurrent(generation)) { transport?.close(); return; }
           this.lastError = error instanceof Error ? error.message : String(error);
-          this.lines?.close(); this.child?.kill(); this.child = undefined;
+          if (this.transport === transport) this.transport = undefined;
+          transport?.close();
+          this.rejectPending(new Error(this.lastError));
         }
       }
     }
@@ -157,7 +208,7 @@ export class CodexBridge extends EventEmitter {
     });
   }
 
-  private send(message: JsonRpcMessage) { this.child?.stdin.write(`${JSON.stringify(message)}\n`); }
+  private send(message: JsonRpcMessage) { this.transport?.send(JSON.stringify(message)); }
 
   private receive(line: string) {
     let message: JsonRpcMessage;
@@ -333,7 +384,9 @@ export class CodexBridge extends EventEmitter {
     task.updatedAt = threadUpdatedAt;
   }
 
-  private handleDisconnect() { if (this.stopped) return; this.connected = false; this.child = undefined; this.subscribedThreads.clear(); this.pending.forEach(({ reject }) => reject(new Error(this.copy.disconnected))); this.pending.clear(); this.emitOverview(); this.scheduleReconnect(); }
+  private rejectPending(error: Error) { this.pending.forEach(({ reject }) => reject(error)); this.pending.clear(); }
+  private isConnectionCurrent(generation: number) { return !this.stopped && generation === this.connectionGeneration; }
+  private handleDisconnect(generation: number) { if (!this.isConnectionCurrent(generation)) return; this.connected = false; this.transport = undefined; this.subscribedThreads.clear(); this.rejectPending(new Error(this.copy.disconnected)); this.emitOverview(); this.scheduleReconnect(); }
   private handleError(error: unknown) { this.lastError = error instanceof Error ? error.message : String(error); this.emitOverview(); }
   private scheduleReconnect() { if (!this.reconnectTimer && !this.stopped) this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.connect(); }, 4000); }
   private emitOverview() { this.emit("overview", this.makeOverview()); }

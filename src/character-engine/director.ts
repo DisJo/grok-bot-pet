@@ -141,7 +141,7 @@ export function baseDirective(overview: CodexOverview, now: number): CharacterDi
   if (!task) return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10);
   if (task.status === "error") return directive("sad", 95, undefined, "error");
   if (task.status === "stopped") return directive("sad", 90, undefined, "stopped");
-  if (task.status === "completed") return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10, undefined, "completed");
+  if (task.status === "completed") return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10);
   const activity = task.activity;
   if (activity && now - activity.at < 6500) {
     if (activity.phase === "failed") return directive("alerting", 95, undefined, "error");

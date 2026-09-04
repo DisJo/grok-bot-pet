@@ -48,11 +48,11 @@ describe("animation director", () => {
     expect(director.next(overview({ selectedTask: task, activeCount: 1 }), 10_100).state).toBe("listening");
   });
 
-  it("keeps completed, failed and stopped colors active while the terminal task remains", () => {
+  it("keeps terminal colors during result animations but clears completed afterward", () => {
     const cases = [
-      { status: "completed" as const, role: "completed", after: 13200, samples: [[5000, "sending"], [5700, "celebrate"], [8300, "laughing"], [9700, "proud"], [11300, "happy"]] },
-      { status: "error" as const, role: "error", after: 10300, samples: [[5000, "alerting"], [5800, "scared"], [6750, "angry"], [8050, "sad"]] },
-      { status: "stopped" as const, role: "stopped", after: 7900, samples: [[5000, "powering-down"], [6000, "sad"]] }
+      { status: "completed" as const, role: "completed", after: 13200, afterRole: undefined, samples: [[5000, "sending"], [5700, "celebrate"], [8300, "laughing"], [9700, "proud"], [11300, "happy"]] },
+      { status: "error" as const, role: "error", after: 10300, afterRole: "error", samples: [[5000, "alerting"], [5800, "scared"], [6750, "angry"], [8050, "sad"]] },
+      { status: "stopped" as const, role: "stopped", after: 7900, afterRole: "stopped", samples: [[5000, "powering-down"], [6000, "sad"]] }
     ];
     for (const entry of cases) {
       const director = new AnimationDirector();
@@ -64,7 +64,7 @@ describe("animation director", () => {
         expect(next.state).toBe(state);
         expect(next.statusColorRole).toBe(entry.role);
       }
-      expect(director.next(overview({ selectedTask: task }), entry.after).statusColorRole).toBe(entry.role);
+      expect(director.next(overview({ selectedTask: task }), entry.after).statusColorRole).toBe(entry.afterRole);
     }
   });
 
@@ -73,7 +73,7 @@ describe("animation director", () => {
     director.next(overview(), 0);
     const completed = { threadId: "t", turnId: "turn-1", title: "T", status: "completed" as const, activeFlags: [], updatedAt: 100 };
     const directive = director.next(overview({ selectedTask: completed, recentTasks: [completed] }), 100);
-    expect(directive.statusColorRole).toBe("completed");
+    expect(directive.statusColorRole).toBeUndefined();
     expect(directive.state).not.toBe("sending");
   });
 

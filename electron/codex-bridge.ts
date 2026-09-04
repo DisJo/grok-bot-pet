@@ -59,8 +59,10 @@ export class CodexBridge extends EventEmitter {
 
   start() {
     this.stopped = false;
-    this.pollHostApproval();
-    this.approvalObserverTimer = setInterval(() => this.pollHostApproval(), 500);
+    if (!this.approvalObserverTimer) {
+      this.pollHostApproval();
+      this.approvalObserverTimer = setInterval(() => this.pollHostApproval(), 500);
+    }
     void this.refresh();
     this.refreshTimer = setInterval(() => void this.refresh(), 2000);
   }

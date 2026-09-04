@@ -55,6 +55,28 @@ describe("host approval observer", () => {
     }
   });
 
+  it("keeps one observer when started twice and stops every host poll", () => {
+    vi.useFakeTimers();
+    try {
+      const promptFlags: boolean[] = [];
+      const bridge = new CodexBridge("/tmp/codex-host-idempotent-start-test", undefined, {
+        codexApprovalVisible: (prompt) => { promptFlags.push(prompt); return false; }
+      });
+      (bridge as any).refresh = async () => bridge.overview();
+
+      bridge.start();
+      bridge.start();
+      vi.advanceTimersByTime(500);
+      expect(promptFlags).toEqual([true, false]);
+
+      bridge.stop();
+      vi.advanceTimersByTime(1_000);
+      expect(promptFlags).toEqual([true, false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores an unavailable native sample without disturbing other pending waits", () => {
     const samples: Array<boolean | undefined> = [true, undefined];
     const bridge = new CodexBridge("/tmp/codex-host-unavailable-test", undefined, {

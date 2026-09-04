@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildMcpApprovalPolicies, CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, selectTasks } from "./codex-bridge";
+import { buildMcpApprovalPolicies, CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, rolloutPendingRefs, selectTasks } from "./codex-bridge";
 import { JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { CodexTask } from "./types";
 
@@ -28,6 +28,21 @@ describe("Codex status mapping", () => {
 });
 
 describe("Codex refresh fallback", () => {
+  it("keeps only stable rollout approval identities", () => {
+    const task = (overrides: Partial<CodexTask>): CodexTask => ({
+      threadId: "thread-1", title: "Task", status: "waiting-input", activeFlags: [], updatedAt: 1,
+      activity: { kind: "approval", phase: "started", at: 1, itemId: "call-1" }, ...overrides
+    });
+
+    expect(rolloutPendingRefs([
+      task({ turnId: "turn-1" }),
+      task({ threadId: "thread-2", activity: { kind: "approval", phase: "completed", at: 1, itemId: "call-2" } }),
+      task({ threadId: "thread-3", status: "processing" }),
+      task({ threadId: "thread-4", activity: { kind: "command", phase: "started", at: 1, itemId: "call-4" } }),
+      task({ threadId: "thread-5", activity: { kind: "approval", phase: "progress", at: 1 } })
+    ])).toEqual([{ id: "call-1", threadId: "thread-1", turnId: "turn-1" }]);
+  });
+
   it("does not block local activity while App Server is still connecting", async () => {
     const bridge = new CodexBridge("/tmp/codex-refresh-test");
     let finishConnect!: () => void;
@@ -88,6 +103,20 @@ describe("Codex refresh fallback", () => {
     const overview = await bridge.refresh();
 
     expect(overview.hasWaiting).toBe(false);
+  });
+
+  it("replaces rollout pending identities on every refresh", async () => {
+    const bridge = new CodexBridge("/tmp/codex-rollout-tracker-test");
+    (bridge as any).connect = async () => {};
+    let waiting = true;
+    (bridge as any).localActivity = { refresh: async () => [{
+      threadId: "thread-1", title: "Task", status: waiting ? "waiting-input" : "processing",
+      activeFlags: [], updatedAt: Date.now(),
+      activity: { kind: waiting ? "approval" : "command", phase: "started", at: Date.now(), itemId: "call-1" }
+    }] };
+    expect((await bridge.refresh()).hasWaiting).toBe(true);
+    waiting = false;
+    expect((await bridge.refresh()).hasWaiting).toBe(false);
   });
 });
 

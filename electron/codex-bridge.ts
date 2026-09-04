@@ -7,6 +7,7 @@ import { CodexLocalActivityReader, McpApprovalPolicy } from "./codex-local-activ
 import { localizedCopy, LocalizedDataCopy } from "./localization";
 import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
 import { connectStdioJsonRpc, connectUnixSocketWebSocket, JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
+import { PendingInteractionRef, PendingInteractionTracker } from "./pending-interaction-tracker";
 
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
@@ -34,6 +35,7 @@ export class CodexBridge extends EventEmitter {
   private localInferenceAvailable = false;
   private mcpPoliciesUpdatedAt = 0;
   private readonly localActivity: CodexLocalActivityReader;
+  private readonly pendingInteractions = new PendingInteractionTracker();
 
   constructor(
     private readonly codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
@@ -75,6 +77,7 @@ export class CodexBridge extends EventEmitter {
     try {
       const inferred = await this.localActivity.refresh();
       this.localInferenceAvailable = inferred.length > 0;
+      this.pendingInteractions.replace("rollout", rolloutPendingRefs(inferred));
       for (const task of inferred) this.mergeInferredTask(task);
     } catch (error) {
       if (!this.connected) this.handleError(error);
@@ -416,7 +419,7 @@ export class CodexBridge extends EventEmitter {
     return {
       connected,
       connectionMode: this.connected ? "app-server" : connected ? "local-inference" : undefined,
-      hasWaiting: tasks.some(isAwaitingApproval),
+      hasWaiting: this.pendingInteractions.hasWaiting() || tasks.some(isAwaitingApproval),
       ...selected,
       lastError: this.lastError
     };
@@ -470,6 +473,15 @@ function isAwaitingApproval(task: CodexTask) {
   if (task.status !== "waiting-input") return false;
   return task.activity?.kind === "approval" && ["started", "progress"].includes(task.activity.phase)
     || task.activeFlags.some((flag) => /approval/i.test(flag));
+}
+
+export function rolloutPendingRefs(tasks: CodexTask[]): PendingInteractionRef[] {
+  return tasks.flatMap((task) => task.status === "waiting-input"
+    && task.activity?.kind === "approval"
+    && ["started", "progress"].includes(task.activity.phase)
+    && task.activity.itemId
+      ? [{ id: task.activity.itemId, threadId: task.threadId, turnId: task.turnId }]
+      : []);
 }
 
 export function mapRuntimeStatus(status: any): CodexTaskStatus {

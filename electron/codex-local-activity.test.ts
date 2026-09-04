@@ -24,6 +24,28 @@ describe("local Codex activity inference", () => {
     expect(state.emotionHint).toBe("focus");
   });
 
+  it("does not guess a destructive Desktop exec is waiting without approval metadata", () => {
+    const state = parseLocalSessionLines([
+      line("2026-09-04T00:00:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-host-exec" }),
+      line("2026-09-04T00:00:01.000Z", "response_item", {
+        type: "custom_tool_call", id: "tool-host-exec", call_id: "call-host-exec", name: "exec",
+        status: "completed", input: JSON.stringify({ cmd: "rm -rf /tmp/approval-fixture" })
+      })
+    ]);
+    expect(state.lastActivity).toMatchObject({ kind: "command", phase: "progress" });
+  });
+
+  it("does not guess a Desktop Browser call is waiting without policy metadata", () => {
+    const state = parseLocalSessionLines([
+      line("2026-09-04T00:00:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-host-browser" }),
+      line("2026-09-04T00:00:01.000Z", "response_item", {
+        type: "function_call", id: "tool-host-browser", call_id: "call-host-browser",
+        name: "mcp__cua_repl", status: "completed", arguments: JSON.stringify({ code: "await cua.createBrowserTab('iab', 'https://example.com')" })
+      })
+    ]);
+    expect(state.lastActivity?.kind).not.toBe("approval");
+  });
+
   it("reports an unfinished escalated exec call as waiting for approval", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");

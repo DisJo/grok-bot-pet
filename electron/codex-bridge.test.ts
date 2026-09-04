@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CodexBridge, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, selectTasks } from "./codex-bridge";
+import { CodexBridge, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, selectTasks } from "./codex-bridge";
 import { CodexTask } from "./types";
 
 describe("Codex status mapping", () => {
@@ -106,6 +106,21 @@ describe("item emotion mapping", () => {
 });
 
 describe("App Server event dispatch", () => {
+  it("prepares the daemon before selecting bridge transports", async () => {
+    const calls: unknown[] = [];
+
+    const transports = await resolveAppServerTransports("/codex", "/codex-home", async (options) => {
+      calls.push(options);
+      return true;
+    });
+
+    expect(calls).toEqual([{ codexCli: "/codex", codexHome: "/codex-home" }]);
+    expect(transports).toEqual([
+      ["app-server", "proxy", "--sock", "/codex-home/app-server-control/app-server-control.sock"],
+      ["app-server", "--listen", "stdio://"]
+    ]);
+  });
+
   it("distinguishes a server request from a client response", () => {
     expect(isServerRequestMessage({ id: 4, method: "item/commandExecution/requestApproval", params: { threadId: "t" } })).toBe(true);
     expect(isServerRequestMessage({ id: 4, result: {} })).toBe(false);
@@ -139,6 +154,29 @@ describe("App Server event dispatch", () => {
 
     expect(signal?.kind).toBe("approval");
     expect(signal?.phase).toBe("started");
+  });
+
+  it("turns a live approval request into waiting input", () => {
+    const bridge = new CodexBridge("/tmp/codex-approval-test");
+    (bridge as any).tasks.set("thread-1", {
+      threadId: "thread-1",
+      title: "Approval test",
+      status: "processing",
+      activeFlags: [],
+      updatedAt: 1
+    });
+
+    (bridge as any).receive(JSON.stringify({
+      id: 7,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "command-1" }
+    }));
+
+    expect(bridge.overview().selectedTask).toMatchObject({
+      threadId: "thread-1",
+      status: "waiting-input",
+      activity: { kind: "approval", phase: "started", itemId: "command-1" }
+    });
   });
 });
 

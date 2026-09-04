@@ -1,14 +1,16 @@
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
-import { accessSync, constants, existsSync, readdirSync } from "node:fs";
+import { accessSync, constants, readdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import path from "node:path";
 import { CodexActivityKind, CodexActivitySignal, CodexOverview, CodexTask, CodexTaskStatus } from "./types";
 import { CodexLocalActivityReader } from "./codex-local-activity";
 import { localizedCopy, LocalizedDataCopy } from "./localization";
+import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
 
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
+export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
 
 export class CodexBridge extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
@@ -103,41 +105,40 @@ export class CodexBridge extends EventEmitter {
   }
 
   private async connectOnce() {
-    const socket = `${this.codexHome}/app-server-control/app-server-control.sock`;
-    const transports: string[][] = existsSync(socket)
-      ? [["app-server", "proxy", "--sock", socket], ["app-server", "--listen", "stdio://"]]
-      : [["app-server", "--listen", "stdio://"]];
     const commands = discoverCodexCliCandidates();
     if (!commands.length) {
       this.lastError = this.copy.codexMissing;
       this.emitOverview();
       return;
     }
-    for (const command of commands) for (const args of transports) {
-      try {
-        const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: homedir(), CODEX_HOME: this.codexHome } });
-        this.child = child;
-        this.lines = createInterface({ input: child.stdout });
-        this.lines.on("line", (line) => this.receive(line));
-        child.stderr.on("data", (buf) => {
-          const line = String(buf).trim();
-          if (line && !line.includes('"level":"WARN"')) this.lastError = line.slice(-500);
-        });
-        const spawnFailure = new Promise<never>((_, reject) => child.once("error", reject));
-        await Promise.race([
-          this.request("initialize", { clientInfo: { name: "codex_emotion_pet", title: "Grok Bot Pet", version: "0.1.5" } }),
-          spawnFailure
-        ]);
-        this.send({ method: "initialized", params: {} });
-        this.connected = true;
-        this.lastError = undefined;
-        child.once("exit", () => this.handleDisconnect());
-        child.once("error", (error) => { this.lastError = error.message; this.handleDisconnect(); });
-        this.emitOverview();
-        return;
-      } catch (error) {
-        this.lastError = error instanceof Error ? error.message : String(error);
-        this.lines?.close(); this.child?.kill(); this.child = undefined;
+    for (const command of commands) {
+      const transports = await resolveAppServerTransports(command, this.codexHome);
+      for (const args of transports) {
+        try {
+          const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: homedir(), CODEX_HOME: this.codexHome } });
+          this.child = child;
+          this.lines = createInterface({ input: child.stdout });
+          this.lines.on("line", (line) => this.receive(line));
+          child.stderr.on("data", (buf) => {
+            const line = String(buf).trim();
+            if (line && !line.includes('"level":"WARN"')) this.lastError = line.slice(-500);
+          });
+          const spawnFailure = new Promise<never>((_, reject) => child.once("error", reject));
+          await Promise.race([
+            this.request("initialize", { clientInfo: { name: "codex_emotion_pet", title: "Grok Bot Pet", version: "0.1.5" } }),
+            spawnFailure
+          ]);
+          this.send({ method: "initialized", params: {} });
+          this.connected = true;
+          this.lastError = undefined;
+          child.once("exit", () => this.handleDisconnect());
+          child.once("error", (error) => { this.lastError = error.message; this.handleDisconnect(); });
+          this.emitOverview();
+          return;
+        } catch (error) {
+          this.lastError = error instanceof Error ? error.message : String(error);
+          this.lines?.close(); this.child?.kill(); this.child = undefined;
+        }
       }
     }
     this.scheduleReconnect();
@@ -348,6 +349,18 @@ export class CodexBridge extends EventEmitter {
       lastError: this.lastError
     };
   }
+}
+
+export async function resolveAppServerTransports(
+  command: string,
+  codexHome: string,
+  prepare: SharedDaemonPreparer = prepareSharedCodexDaemon
+) {
+  const daemonReady = await prepare({ codexCli: command, codexHome });
+  return appServerTransports(
+    path.join(codexHome, "app-server-control", "app-server-control.sock"),
+    daemonReady
+  );
 }
 
 function isAwaitingApproval(task: CodexTask) {

@@ -16,6 +16,11 @@ describe("native macOS window bridge build", () => {
     expect(source).toContain("getWindowFrame");
     expect(source).toContain("NSScreenSaverWindowLevel");
     expect(source).toContain("NSNormalWindowLevel");
+    expect(source).toContain("codexApprovalVisible");
+    expect(source).toContain('bundleIdentifier isEqualToString:@"com.openai.codex"');
+    expect(source).toContain("AXIsProcessTrustedWithOptions");
+    expect(source).toContain("kAXWindowsAttribute");
+    expect(source).not.toContain("napi_create_string");
   });
 
   it("builds one Universal module for Intel and Apple Silicon", () => {
@@ -24,6 +29,7 @@ describe("native macOS window bridge build", () => {
     expect(script).toContain('"-arch", "arm64"');
     expect(script).toContain('"-arch", "x86_64"');
     expect(script).toContain('"-framework", "Cocoa"');
+    expect(script).toContain('"-framework", "ApplicationServices"');
     expect(script).toContain("node_api.h");
     expect(script).toContain("window-bridge.node");
     expect(script).toContain("lipo");

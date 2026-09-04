@@ -5,6 +5,7 @@ export interface NativeWindowBinding {
   offsetWindow(nativeHandle: Buffer, electronDeltaX: number, electronDeltaY: number): boolean;
   setAlwaysOnTop(nativeHandle: Buffer, enabled: boolean): boolean;
   getWindowFrame(nativeHandle: Buffer): PetBounds | undefined;
+  codexApprovalVisible(promptForPermission?: boolean): boolean | null;
 }
 
 type BindingLoader = (modulePath: string) => unknown;
@@ -28,7 +29,8 @@ function validBinding(value: unknown): value is NativeWindowBinding {
   const candidate = value as Partial<NativeWindowBinding>;
   return typeof candidate.offsetWindow === "function"
     && typeof candidate.setAlwaysOnTop === "function"
-    && typeof candidate.getWindowFrame === "function";
+    && typeof candidate.getWindowFrame === "function"
+    && typeof candidate.codexApprovalVisible === "function";
 }
 
 export class NativeWindowBridge {
@@ -70,6 +72,16 @@ export class NativeWindowBridge {
     try {
       const frame = this.load()?.getWindowFrame(nativeHandle);
       return validBounds(frame) ? frame : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  codexApprovalVisible(promptForPermission = false) {
+    if (typeof promptForPermission !== "boolean") return undefined;
+    try {
+      const visible = this.load()?.codexApprovalVisible(promptForPermission);
+      return typeof visible === "boolean" ? visible : undefined;
     } catch {
       return undefined;
     }

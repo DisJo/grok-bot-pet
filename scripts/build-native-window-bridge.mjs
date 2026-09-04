@@ -31,6 +31,7 @@ const args = [
   "-bundle",
   "-undefined", "dynamic_lookup",
   "-framework", "Cocoa",
+  "-framework", "ApplicationServices",
   "-I", nodeInclude,
   "-arch", "arm64",
   "-arch", "x86_64",

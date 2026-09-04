@@ -8,6 +8,7 @@ function binding(overrides: Partial<NativeWindowBinding> = {}): NativeWindowBind
     offsetWindow: () => true,
     setAlwaysOnTop: () => true,
     getWindowFrame: () => ({ x: 1, y: 2, width: 300, height: 300 }),
+    codexApprovalVisible: () => false,
     ...overrides
   };
 }
@@ -41,11 +42,13 @@ describe("native macOS window bridge adapter", () => {
     const throwing = new NativeWindowBridge("bridge.node", () => binding({
       offsetWindow: () => { throw new Error("native failure"); },
       setAlwaysOnTop: () => { throw new Error("native failure"); },
-      getWindowFrame: () => { throw new Error("native failure"); }
+      getWindowFrame: () => { throw new Error("native failure"); },
+      codexApprovalVisible: () => { throw new Error("native failure"); }
     }));
     expect(throwing.offsetWindow(handle, 1, 2)).toBe(false);
     expect(throwing.setAlwaysOnTop(handle, true)).toBe(false);
     expect(throwing.getWindowFrame(handle)).toBeUndefined();
+    expect(throwing.codexApprovalVisible()).toBeUndefined();
 
     const malformed = new NativeWindowBridge("bridge.node", () => ({ offsetWindow: true }));
     expect(malformed.offsetWindow(handle, 1, 2)).toBe(false);
@@ -61,5 +64,12 @@ describe("native macOS window bridge adapter", () => {
     expect(bridge.offsetWindow(Buffer.alloc(0), 1, 2)).toBe(false);
     expect(bridge.getWindowFrame(handle)).toBeUndefined();
     expect(calls).toBe(0);
+  });
+
+  it("validates Codex approval visibility and preserves unavailable", () => {
+    expect(new NativeWindowBridge("bridge.node", () => binding({ codexApprovalVisible: () => true })).codexApprovalVisible(true)).toBe(true);
+    expect(new NativeWindowBridge("bridge.node", () => binding({ codexApprovalVisible: () => false })).codexApprovalVisible()).toBe(false);
+    expect(new NativeWindowBridge("bridge.node", () => binding({ codexApprovalVisible: () => null })).codexApprovalVisible()).toBeUndefined();
+    expect(new NativeWindowBridge("bridge.node", () => binding({ codexApprovalVisible: () => "yes" as any })).codexApprovalVisible()).toBeUndefined();
   });
 });

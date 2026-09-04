@@ -7,6 +7,29 @@
 
 namespace {
 
+template <typename T>
+class ScopedCF {
+ public:
+  ScopedCF() = default;
+  explicit ScopedCF(T value) : value_(value) {}
+  ~ScopedCF() {
+    if (value_) CFRelease(value_);
+  }
+
+  ScopedCF(const ScopedCF&) = delete;
+  ScopedCF& operator=(const ScopedCF&) = delete;
+
+  T get() const { return value_; }
+  T* out() {
+    if (value_) CFRelease(value_);
+    value_ = nullptr;
+    return &value_;
+  }
+
+ private:
+  T value_ = nullptr;
+};
+
 napi_value Boolean(napi_env env, bool value) {
   napi_value result;
   napi_get_boolean(env, value, &result);
@@ -164,28 +187,30 @@ bool AccessibilityTrusted(bool promptForPermission) {
   return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
 
-NSString* CopyStringAttribute(AXUIElementRef element, CFStringRef attribute) {
-  CFTypeRef value = nullptr;
-  AXError error = AXUIElementCopyAttributeValue(element, attribute, &value);
-  if (error != kAXErrorSuccess || !value) {
-    if (value) CFRelease(value);
-    return nil;
-  }
-  NSString* string = CFGetTypeID(value) == CFStringGetTypeID() ? [(__bridge NSString*)value copy] : nil;
-  CFRelease(value);
-  return string;
+bool MissingAttribute(AXError error) {
+  return error == kAXErrorAttributeUnsupported || error == kAXErrorNoValue;
 }
 
-bool BooleanAttribute(AXUIElementRef element, CFStringRef attribute, bool fallback) {
-  CFTypeRef value = nullptr;
-  AXError error = AXUIElementCopyAttributeValue(element, attribute, &value);
-  if (error != kAXErrorSuccess || !value) {
-    if (value) CFRelease(value);
-    return fallback;
+NSString* CopyStringAttribute(AXUIElementRef element, CFStringRef attribute, bool required, bool* unavailable) {
+  ScopedCF<CFTypeRef> value;
+  AXError error = AXUIElementCopyAttributeValue(element, attribute, value.out());
+  if (error != kAXErrorSuccess) {
+    if (required || !MissingAttribute(error)) *unavailable = true;
+    return nil;
   }
-  bool result = CFGetTypeID(value) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)value) : fallback;
-  CFRelease(value);
-  return result;
+  if (!value.get() || CFGetTypeID(value.get()) != CFStringGetTypeID()) {
+    if (required) *unavailable = true;
+    return nil;
+  }
+  return [(__bridge NSString*)value.get() copy];
+}
+
+bool RequiredBooleanAttribute(AXUIElementRef element, CFStringRef attribute, bool* output) {
+  ScopedCF<CFTypeRef> value;
+  AXError error = AXUIElementCopyAttributeValue(element, attribute, value.out());
+  if (error != kAXErrorSuccess || !value.get() || CFGetTypeID(value.get()) != CFBooleanGetTypeID()) return false;
+  *output = CFBooleanGetValue((CFBooleanRef)value.get());
+  return true;
 }
 
 bool MatchesLabel(NSString* value, bool affirmative) {
@@ -210,77 +235,139 @@ struct ApprovalSignals {
   bool visiblePanel = false;
 };
 
-ApprovalSignals InspectApprovalSubtree(AXUIElementRef element, size_t depth, size_t* visited, bool ancestorVisible) {
+struct TraversalState {
+  ScopedCF<CFMutableSetRef> visitedElements;
+  size_t visitedCount = 0;
+  bool unavailable = false;
+  bool budgetExhausted = false;
+
+  TraversalState()
+    : visitedElements(CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks)) {
+    if (!visitedElements.get()) unavailable = true;
+  }
+};
+
+bool BeginVisit(AXUIElementRef element, size_t depth, TraversalState& state) {
+  if (!element || !state.visitedElements.get()) {
+    state.unavailable = true;
+    return false;
+  }
+  if (CFSetContainsValue(state.visitedElements.get(), element)) {
+    state.unavailable = true;
+    return false;
+  }
+  if (depth > 12) {
+    state.unavailable = true;
+    return false;
+  }
+  if (state.visitedCount >= 1500) {
+    state.unavailable = true;
+    state.budgetExhausted = true;
+    return false;
+  }
+  CFSetAddValue(state.visitedElements.get(), element);
+  state.visitedCount += 1;
+  return true;
+}
+
+ApprovalSignals InspectApprovalSubtree(AXUIElementRef element, size_t depth, TraversalState& state) {
   ApprovalSignals signals;
-  if (!element || depth > 12 || *visited >= 1500) return signals;
-  *visited += 1;
+  if (!BeginVisit(element, depth, state)) return signals;
 
-  NSString* role = CopyStringAttribute(element, kAXRoleAttribute);
-  NSString* subrole = CopyStringAttribute(element, kAXSubroleAttribute);
-  NSString* title = CopyStringAttribute(element, kAXTitleAttribute);
-  NSString* value = CopyStringAttribute(element, kAXValueAttribute);
-  bool hidden = BooleanAttribute(element, kAXHiddenAttribute, false);
-  bool enabled = BooleanAttribute(element, kAXEnabledAttribute, false);
-  bool visible = ancestorVisible && !hidden;
+  bool unavailable = false;
+  NSString* role = CopyStringAttribute(element, kAXRoleAttribute, true, &unavailable);
+  NSString* subrole = CopyStringAttribute(element, kAXSubroleAttribute, false, &unavailable);
+  NSString* title = CopyStringAttribute(element, kAXTitleAttribute, false, &unavailable);
+  NSString* value = CopyStringAttribute(element, kAXValueAttribute, false, &unavailable);
+  if (unavailable) {
+    state.unavailable = true;
+    return signals;
+  }
 
-  bool isDecisionControl = [role isEqualToString:(__bridge NSString*)kAXButtonRole] && enabled && visible;
+  bool isDecisionControl = [role isEqualToString:(__bridge NSString*)kAXButtonRole];
   if (isDecisionControl) {
+    bool enabled = false;
+    if (!RequiredBooleanAttribute(element, kAXEnabledAttribute, &enabled)) {
+      state.unavailable = true;
+      return signals;
+    }
+    if (!enabled) return signals;
     signals.affirmative = MatchesLabel(title, true) || MatchesLabel(value, true);
     signals.rejecting = MatchesLabel(title, false) || MatchesLabel(value, false);
   }
 
-  CFTypeRef childrenValue = nullptr;
-  AXError childrenError = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &childrenValue);
-  if (childrenError == kAXErrorSuccess && childrenValue) {
-    if (CFGetTypeID(childrenValue) == CFArrayGetTypeID()) {
-      CFArrayRef children = (CFArrayRef)childrenValue;
+  ScopedCF<CFTypeRef> childrenValue;
+  AXError childrenError = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, childrenValue.out());
+  if (childrenError == kAXErrorSuccess) {
+    if (!childrenValue.get() || CFGetTypeID(childrenValue.get()) != CFArrayGetTypeID()) {
+      state.unavailable = true;
+    } else {
+      CFArrayRef children = (CFArrayRef)childrenValue.get();
       CFIndex count = CFArrayGetCount(children);
-      for (CFIndex index = 0; index < count && *visited < 1500; ++index) {
+      for (CFIndex index = 0; index < count && !signals.visiblePanel && !state.budgetExhausted; ++index) {
         CFTypeRef child = CFArrayGetValueAtIndex(children, index);
-        if (!child || CFGetTypeID(child) != AXUIElementGetTypeID()) continue;
-        ApprovalSignals childSignals = InspectApprovalSubtree((AXUIElementRef)child, depth + 1, visited, visible);
+        if (!child || CFGetTypeID(child) != AXUIElementGetTypeID()) {
+          state.unavailable = true;
+          continue;
+        }
+        bool hidden = false;
+        if (!RequiredBooleanAttribute((AXUIElementRef)child, kAXHiddenAttribute, &hidden)) {
+          state.unavailable = true;
+          continue;
+        }
+        if (hidden) continue;
+        ApprovalSignals childSignals = InspectApprovalSubtree((AXUIElementRef)child, depth + 1, state);
         signals.affirmative = signals.affirmative || childSignals.affirmative;
         signals.rejecting = signals.rejecting || childSignals.rejecting;
         signals.visiblePanel = signals.visiblePanel || childSignals.visiblePanel;
       }
     }
+  } else if (!MissingAttribute(childrenError)) {
+    state.unavailable = true;
   }
-  if (childrenValue) CFRelease(childrenValue);
 
   bool isContainer = [role isEqualToString:(__bridge NSString*)kAXSheetRole]
     || [role isEqualToString:(__bridge NSString*)kAXGroupRole]
     || [subrole isEqualToString:(__bridge NSString*)kAXDialogSubrole]
     || [subrole isEqualToString:(__bridge NSString*)kAXSystemDialogSubrole];
-  if (isContainer && visible && signals.affirmative && signals.rejecting) signals.visiblePanel = true;
+  if (isContainer && signals.affirmative && signals.rejecting) signals.visiblePanel = true;
   return signals;
 }
 
 enum class ApprovalQueryResult { unavailable, notVisible, visible };
 
 ApprovalQueryResult ApplicationApprovalPanel(NSRunningApplication* application) {
-  AXUIElementRef applicationElement = AXUIElementCreateApplication(application.processIdentifier);
-  if (!applicationElement) return ApprovalQueryResult::unavailable;
+  ScopedCF<AXUIElementRef> applicationElement(AXUIElementCreateApplication(application.processIdentifier));
+  if (!applicationElement.get()) return ApprovalQueryResult::unavailable;
 
   bool visible = false;
-  size_t visited = 0;
-  CFTypeRef windowsValue = nullptr;
-  AXError error = AXUIElementCopyAttributeValue(applicationElement, kAXWindowsAttribute, &windowsValue);
-  if (error != kAXErrorSuccess || !windowsValue || CFGetTypeID(windowsValue) != CFArrayGetTypeID()) {
-    if (windowsValue) CFRelease(windowsValue);
-    CFRelease(applicationElement);
+  TraversalState state;
+  ScopedCF<CFTypeRef> windowsValue;
+  AXError error = AXUIElementCopyAttributeValue(applicationElement.get(), kAXWindowsAttribute, windowsValue.out());
+  if (error != kAXErrorSuccess || !windowsValue.get() || CFGetTypeID(windowsValue.get()) != CFArrayGetTypeID()) {
     return ApprovalQueryResult::unavailable;
   }
 
-  CFArrayRef windows = (CFArrayRef)windowsValue;
+  CFArrayRef windows = (CFArrayRef)windowsValue.get();
   CFIndex count = CFArrayGetCount(windows);
-  for (CFIndex index = 0; index < count && visited < 1500 && !visible; ++index) {
+  for (CFIndex index = 0; index < count && !visible && !state.budgetExhausted; ++index) {
     CFTypeRef window = CFArrayGetValueAtIndex(windows, index);
-    if (!window || CFGetTypeID(window) != AXUIElementGetTypeID()) continue;
-    visible = InspectApprovalSubtree((AXUIElementRef)window, 0, &visited, true).visiblePanel;
+    if (!window || CFGetTypeID(window) != AXUIElementGetTypeID()) {
+      state.unavailable = true;
+      continue;
+    }
+    bool hidden = false;
+    bool minimized = false;
+    if (!RequiredBooleanAttribute((AXUIElementRef)window, kAXHiddenAttribute, &hidden)
+      || !RequiredBooleanAttribute((AXUIElementRef)window, kAXMinimizedAttribute, &minimized)) {
+      state.unavailable = true;
+      continue;
+    }
+    if (hidden || minimized) continue;
+    visible = InspectApprovalSubtree((AXUIElementRef)window, 0, state).visiblePanel;
   }
-  CFRelease(windowsValue);
-  CFRelease(applicationElement);
-  return visible ? ApprovalQueryResult::visible : ApprovalQueryResult::notVisible;
+  if (visible) return ApprovalQueryResult::visible;
+  return state.unavailable ? ApprovalQueryResult::unavailable : ApprovalQueryResult::notVisible;
 }
 
 napi_value CodexApprovalVisible(napi_env env, napi_callback_info info) {
@@ -290,21 +377,21 @@ napi_value CodexApprovalVisible(napi_env env, napi_callback_info info) {
 
   bool promptForPermission = false;
   if (argc == 1 && napi_get_value_bool(env, argv[0], &promptForPermission) != napi_ok) return Null(env);
-  if (!AccessibilityTrusted(promptForPermission)) return Null(env);
-
-  @autoreleasepool {
-    @try {
+  @try {
+    @autoreleasepool {
+      if (!AccessibilityTrusted(promptForPermission)) return Null(env);
       bool unavailable = false;
       for (NSRunningApplication* application in NSWorkspace.sharedWorkspace.runningApplications) {
         if (![application.bundleIdentifier isEqualToString:@"com.openai.codex"]) continue;
+        if (application.hidden) continue;
         ApprovalQueryResult result = ApplicationApprovalPanel(application);
         if (result == ApprovalQueryResult::visible) return Boolean(env, true);
         unavailable = unavailable || result == ApprovalQueryResult::unavailable;
       }
       return unavailable ? Null(env) : Boolean(env, false);
-    } @catch (NSException*) {
-      return Null(env);
     }
+  } @catch (...) {
+    return Null(env);
   }
 }
 

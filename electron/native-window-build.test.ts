@@ -23,6 +23,31 @@ describe("native macOS window bridge build", () => {
     expect(source).not.toContain("napi_create_string");
   });
 
+  it("fails closed for Accessibility ownership, visibility, cycles, and traversal limits", () => {
+    const source = read("native/window-bridge/window_bridge.mm");
+    const callback = source.slice(source.indexOf("napi_value CodexApprovalVisible"), source.indexOf("napi_value Init"));
+    expect(source).toContain("class ScopedCF");
+    expect(source).toContain("~ScopedCF");
+    expect(source).toMatch(/ScopedCF<AXUIElementRef>\s+\w+\(AXUIElementCreateApplication/);
+    expect(source).toContain("application.hidden");
+    expect(source).toContain("kAXMinimizedAttribute");
+    expect(source).toContain("CFSetContainsValue");
+    expect(source).toContain("CFSetAddValue");
+    expect(source).toContain("CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks)");
+    expect(source.indexOf("CFSetContainsValue")).toBeLessThan(source.indexOf("state.visitedCount += 1"));
+    const copyCalls = source.match(/AXUIElementCopyAttributeValue\([^;]+/g) ?? [];
+    expect(copyCalls.length).toBeGreaterThan(0);
+    expect(copyCalls.every((call) => call.includes(".out()"))).toBe(true);
+    expect(source).toMatch(/if \(depth > 12\) \{\s*state\.unavailable = true;/);
+    expect(source).toMatch(/if \(state\.visitedCount >= 1500\) \{\s*state\.unavailable = true;/);
+    expect(source).toMatch(/RequiredBooleanAttribute\([^;]+kAXHiddenAttribute/);
+    expect(source).toMatch(/RequiredBooleanAttribute\([^;]+kAXMinimizedAttribute/);
+    expect(source).not.toContain("BooleanAttribute(element, kAXHiddenAttribute, false)");
+    expect(callback.indexOf("@try")).toBeGreaterThanOrEqual(0);
+    expect(callback.indexOf("@try")).toBeLessThan(callback.indexOf("AccessibilityTrusted"));
+    expect(callback).toContain("@catch (...)");
+  });
+
   it("builds one Universal module for Intel and Apple Silicon", () => {
     const script = read("scripts/build-native-window-bridge.mjs");
     expect(script).toContain('"-bundle"');

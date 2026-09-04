@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -108,6 +108,7 @@ describe("Codex refresh fallback", () => {
   it("replaces rollout pending identities on every refresh", async () => {
     const bridge = new CodexBridge("/tmp/codex-rollout-tracker-test");
     (bridge as any).connect = async () => {};
+    const replace = vi.spyOn((bridge as any).pendingInteractions, "replace");
     let waiting = true;
     (bridge as any).localActivity = { refresh: async () => [{
       threadId: "thread-1", title: "Task", status: waiting ? "waiting-input" : "processing",
@@ -115,8 +116,10 @@ describe("Codex refresh fallback", () => {
       activity: { kind: waiting ? "approval" : "command", phase: "started", at: Date.now(), itemId: "call-1" }
     }] };
     expect((await bridge.refresh()).hasWaiting).toBe(true);
+    expect(replace).toHaveBeenLastCalledWith("rollout", [{ id: "call-1", threadId: "thread-1", turnId: undefined }]);
     waiting = false;
     expect((await bridge.refresh()).hasWaiting).toBe(false);
+    expect(replace).toHaveBeenLastCalledWith("rollout", []);
   });
 });
 

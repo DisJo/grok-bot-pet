@@ -6,6 +6,7 @@ import { CodexOverview, PetSettings } from "./types";
 import { EMPTY_CODEX_OVERVIEW } from "../electron/defaults";
 import { DEFAULT_SETTINGS } from "../electron/settings";
 import { petLayout } from "./pet-layout";
+import { uniformAutoShape } from "./character-engine/auto-shape";
 
 export default function App() {
   const [overview, setOverview] = useState<CodexOverview>(EMPTY_CODEX_OVERVIEW);
@@ -14,6 +15,7 @@ export default function App() {
   const director = useRef(new AnimationDirector());
   const [directive, setDirective] = useState<CharacterDirective>(() => director.current.next(EMPTY_CODEX_OVERVIEW));
   const latestOverview = useRef(overview);
+  const autoShapeStartedAt = useRef(Date.now());
   const dragStart = useRef<{ x: number; y: number } | undefined>(undefined);
   const dragMoved = useRef(false);
   const layout = petLayout(settings.characterSize);
@@ -91,6 +93,10 @@ export default function App() {
     setDirective(director.current.force(trick === "bounce" ? "bouncing" : "playful", Date.now(), trick));
   };
 
+  const displayedDirective = settings.autoShape
+    ? { ...directive, shape: uniformAutoShape(Date.now() - autoShapeStartedAt.current) }
+    : { ...directive, shape: settings.fixedShape };
+
   return (
     <main className={`app-shell ${settings.shadowsEnabled ? "shadows-enabled" : "shadows-disabled"}`} style={layoutStyle}>
       <button
@@ -104,7 +110,7 @@ export default function App() {
       >
         <span className="pet-shadow" aria-hidden="true" />
         <GrokCharacter
-          directive={settings.autoShape ? directive : { ...directive, shape: settings.fixedShape }}
+          directive={displayedDirective}
           pointerFollowing={settings.pointerFollowing}
           gaze={gaze}
           size={layout.characterSize}

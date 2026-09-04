@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import path from "node:path";
 import { CodexActivityKind, CodexActivitySignal, CodexOverview, CodexTask, CodexTaskStatus } from "./types";
-import { CodexLocalActivityReader } from "./codex-local-activity";
+import { CodexLocalActivityReader, McpApprovalPolicy } from "./codex-local-activity";
 import { localizedCopy, LocalizedDataCopy } from "./localization";
 import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
 import { connectStdioJsonRpc, connectUnixSocketWebSocket, JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
@@ -32,6 +32,7 @@ export class CodexBridge extends EventEmitter {
   private connecting?: Promise<void>;
   private connectionGeneration = 0;
   private localInferenceAvailable = false;
+  private mcpPoliciesUpdatedAt = 0;
   private readonly localActivity: CodexLocalActivityReader;
 
   constructor(
@@ -83,6 +84,7 @@ export class CodexBridge extends EventEmitter {
   }
 
   private async refreshAppServer() {
+    void this.refreshMcpApprovalPolicies();
     let response: any;
     try {
       response = await this.request("thread/list", {
@@ -108,6 +110,23 @@ export class CodexBridge extends EventEmitter {
       const detail = await this.request("thread/read", { threadId: raw.id, includeTurns: true });
       this.applyThreadRead(raw.id, detail);
     }));
+  }
+
+  private async refreshMcpApprovalPolicies() {
+    const now = Date.now();
+    if (now - this.mcpPoliciesUpdatedAt < 12_000) return;
+    this.mcpPoliciesUpdatedAt = now;
+    try {
+      const [configResponse, statusResponse] = await Promise.all([
+        this.request("config/read", { includeLayers: false }),
+        this.request("mcpServerStatus/list", { detail: "toolsAndAuthOnly", limit: 100 })
+      ]);
+      const config = configResponse?.config ?? configResponse;
+      const servers = statusResponse?.data ?? statusResponse?.servers ?? [];
+      this.localActivity.setMcpApprovalPolicies(buildMcpApprovalPolicies(config, servers));
+    } catch {
+      // Older App Server versions may not expose MCP policy metadata.
+    }
   }
 
   private connect() {
@@ -414,6 +433,37 @@ export async function resolveAppServerTransports(
     path.join(codexHome, "app-server-control", "app-server-control.sock"),
     daemonReady
   );
+}
+
+export function buildMcpApprovalPolicies(config: any, servers: any[]): McpApprovalPolicy[] {
+  const policies: McpApprovalPolicy[] = [];
+  for (const server of servers) {
+    const serverName = String(server?.name || "");
+    if (!serverName) continue;
+    const directConfig = config?.mcp_servers?.[serverName];
+    const pluginConfig = server?.pluginId ? config?.plugins?.[server.pluginId]?.mcp_servers?.[serverName] : undefined;
+    const serverConfig = pluginConfig ?? directConfig ?? {};
+    for (const [toolKey, tool] of Object.entries<any>(server?.tools ?? {})) {
+      const toolName = String(tool?.name || toolKey);
+      const mode = serverConfig?.tools?.[toolName]?.approval_mode
+        ?? serverConfig?.default_tools_approval_mode
+        ?? "auto";
+      if (!["auto", "prompt", "writes", "approve"].includes(mode)) continue;
+      policies.push({
+        server: serverName,
+        tool: toolName,
+        mode,
+        readOnly: booleanAnnotation(tool?.annotations, "readOnlyHint", "read_only_hint"),
+        destructive: booleanAnnotation(tool?.annotations, "destructiveHint", "destructive_hint")
+      });
+    }
+  }
+  return policies;
+}
+
+function booleanAnnotation(value: any, camelCase: string, snakeCase: string) {
+  const candidate = value?.[camelCase] ?? value?.[snakeCase];
+  return typeof candidate === "boolean" ? candidate : undefined;
 }
 
 function isAwaitingApproval(task: CodexTask) {

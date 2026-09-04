@@ -120,6 +120,284 @@ describe("local Codex activity inference", () => {
     });
   });
 
+  it("reports an MCP tool with an approval-gated policy as waiting", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(path.join(sessions, "rollout-mcp-approval.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-mcp", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-mcp" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call",
+        call_id: "call-mcp",
+        name: "exec",
+        status: "completed",
+        input: `const result = await tools.mcp__codegraph__codegraph_context({ task: "inspect" });`
+      })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    reader.setMcpApprovalPolicies([
+      { server: "codegraph", tool: "codegraph_context", mode: "auto" }
+    ]);
+
+    expect((await reader.refresh())[0]).toMatchObject({
+      status: "waiting-input",
+      activity: { kind: "approval", phase: "started", itemId: "call-mcp" }
+    });
+  });
+
+  it("does not wait for MCP tools that are approved or declared read-only", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(path.join(sessions, "rollout-mcp-no-approval.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-mcp-safe", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-mcp-safe" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call",
+        call_id: "call-approved",
+        name: "exec",
+        status: "completed",
+        input: `await tools.mcp__codegraph__codegraph_explore({ query: "reader" });`
+      }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call",
+        call_id: "call-readonly",
+        name: "exec",
+        status: "completed",
+        input: `await tools.mcp__node_repl__js({ code: "1 + 1" });`
+      })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    reader.setMcpApprovalPolicies([
+      { server: "codegraph", tool: "codegraph_explore", mode: "approve" },
+      { server: "node_repl", tool: "js", mode: "auto", readOnly: true }
+    ]);
+
+    expect((await reader.refresh())[0]).toMatchObject({ status: "processing" });
+  });
+
+  it("leaves MCP approval waiting when the matching tool output arrives", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(path.join(sessions, "rollout-mcp-completed.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-mcp-done", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-mcp-done" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call",
+        call_id: "call-mcp-done",
+        name: "exec",
+        status: "completed",
+        input: `await tools.mcp__codegraph__codegraph_context({ task: "inspect" });`
+      }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call_output",
+        call_id: "call-mcp-done",
+        output: "ok"
+      })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    reader.setMcpApprovalPolicies([
+      { server: "codegraph", tool: "codegraph_context", mode: "auto" }
+    ]);
+
+    expect((await reader.refresh())[0]).toMatchObject({
+      status: "processing",
+      activity: { kind: "approval", phase: "completed", itemId: "call-mcp-done" }
+    });
+  });
+
+  it("does not wait when an escalated command matches an approved prefix", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    const rules = path.join(root, "rules");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, "default.rules"), `prefix_rule(pattern=["curl"], decision="allow")\n`);
+    writeFileSync(path.join(sessions, "rollout-allowed-command.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-allowed-command", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-allowed-command" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call",
+        call_id: "call-curl",
+        name: "exec",
+        status: "completed",
+        input: `await tools.exec_command({ cmd: "curl https://example.com", sandbox_permissions: "require_escalated", prefix_rule: ["curl"] });`
+      })
+    ].join("\n") + "\n");
+
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "processing",
+      activity: { kind: "command" }
+    });
+  });
+
+  it("does not wait when JSON function-call input names an approved prefix", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    const rules = path.join(root, "rules");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, "default.rules"), `prefix_rule(pattern=["curl"], decision="allow")\n`);
+    writeFileSync(path.join(sessions, "rollout-json-command.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-json-command", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-json-command" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "function_call",
+        call_id: "call-json-curl",
+        name: "exec",
+        input: JSON.stringify({
+          cmd: "curl https://example.com",
+          sandbox_permissions: "require_escalated",
+          prefix_rule: ["curl"]
+        })
+      })
+    ].join("\n") + "\n");
+
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "processing",
+      activity: { kind: "command" }
+    });
+  });
+
+  it("still waits when an approved prefix does not match the requested command", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    const rules = path.join(root, "rules");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, "default.rules"), `prefix_rule(pattern=["curl"], decision="allow")\n`);
+    writeFileSync(path.join(sessions, "rollout-mismatched-command.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-mismatched-command", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-mismatched-command" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "function_call",
+        call_id: "call-mismatched-command",
+        name: "exec",
+        input: JSON.stringify({
+          cmd: "touch /tmp/not-approved",
+          sandbox_permissions: "require_escalated",
+          prefix_rule: ["curl"]
+        })
+      })
+    ].join("\n") + "\n");
+
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "waiting-input",
+      activity: { kind: "approval" }
+    });
+  });
+
+  it("still waits when only the first segment of a compound command is approved", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    const rules = path.join(root, "rules");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, "default.rules"), `prefix_rule(pattern=["curl"], decision="allow")\n`);
+    writeFileSync(path.join(sessions, "rollout-compound-command.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-compound-command", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-compound-command" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "function_call",
+        call_id: "call-compound-command",
+        name: "exec",
+        input: JSON.stringify({
+          cmd: "curl https://example.com && touch /tmp/not-approved",
+          sandbox_permissions: "require_escalated",
+          prefix_rule: ["curl"]
+        })
+      })
+    ].join("\n") + "\n");
+
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "waiting-input",
+      activity: { kind: "approval" }
+    });
+  });
+
+  it("recognizes an approved argv prefix containing a quoted space", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    const rules = path.join(root, "rules");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, "default.rules"), `prefix_rule(pattern=["echo", "hello world"], decision="allow")\n`);
+    writeFileSync(path.join(sessions, "rollout-quoted-command.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-quoted-command", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-quoted-command" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "function_call",
+        call_id: "call-quoted-command",
+        name: "exec",
+        input: JSON.stringify({
+          cmd: `echo "hello world" again`,
+          sandbox_permissions: "require_escalated"
+        })
+      })
+    ].join("\n") + "\n");
+
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "processing",
+      activity: { kind: "command" }
+    });
+  });
+
+  it("preserves unknown backslash escapes inside double quotes when matching argv", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    const rules = path.join(root, "rules");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, "default.rules"), `prefix_rule(pattern=["printf", "q"], decision="allow")\n`);
+    writeFileSync(path.join(sessions, "rollout-backslash-command.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-backslash-command", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-backslash-command" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "function_call",
+        call_id: "call-backslash-command",
+        name: "exec",
+        input: JSON.stringify({
+          cmd: String.raw`printf "\q"`,
+          sandbox_permissions: "require_escalated"
+        })
+      })
+    ].join("\n") + "\n");
+
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "waiting-input",
+      activity: { kind: "approval" }
+    });
+  });
+
+  it("requires approval for destructive MCP tools unless they are read-only", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(path.join(sessions, "rollout-destructive-mcp.jsonl"), [
+      line(new Date().toISOString(), "session_meta", { id: "thread-destructive", cwd: "/tmp/project", source: "vscode" }),
+      line(new Date().toISOString(), "event_msg", { type: "task_started", turn_id: "turn-destructive" }),
+      line(new Date().toISOString(), "response_item", {
+        type: "custom_tool_call",
+        call_id: "call-destructive",
+        name: "exec",
+        input: `await tools.mcp__store__delete_record({ id: "1" });`
+      })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    reader.setMcpApprovalPolicies([
+      { server: "store", tool: "delete_record", mode: "approve", destructive: true }
+    ]);
+
+    expect((await reader.refresh())[0]).toMatchObject({ status: "waiting-input" });
+
+    reader.setMcpApprovalPolicies([
+      { server: "store", tool: "delete_record", mode: "auto", readOnly: true, destructive: true }
+    ]);
+    expect((await reader.refresh())[0]).toMatchObject({ status: "processing" });
+  });
+
   it("reads a complete approval record before the writer appends a newline", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");

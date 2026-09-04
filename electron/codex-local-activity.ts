@@ -1,4 +1,4 @@
-import { open, readdir, stat } from "node:fs/promises";
+import { open, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { CodexActivityKind, CodexActivitySignal, CodexTask, CodexTaskStatus } from "./types";
 
@@ -25,11 +25,20 @@ interface SessionState {
   startedAt?: number;
   openTurn: boolean;
   pendingApprovalCallIds: Set<string>;
+  approvedCommandPrefixes: string[][];
   terminalStatus?: CodexTaskStatus;
   awaitingPlanConfirmation?: boolean;
   lastActivity?: CodexActivitySignal;
   emotionHint?: string;
   lastEventAt: number;
+}
+
+export interface McpApprovalPolicy {
+  server: string;
+  tool: string;
+  mode: "auto" | "prompt" | "writes" | "approve";
+  readOnly?: boolean;
+  destructive?: boolean;
 }
 
 export interface ParsedLocalEventState {
@@ -46,8 +55,17 @@ export class CodexLocalActivityReader {
   private sessionFiles: string[] = [];
   private lastScanAt = 0;
   private states = new Map<string, SessionState>();
+  private mcpApprovalPolicies = new Map<string, McpApprovalPolicy>();
+  private approvedCommandPrefixes: string[][] = [];
 
   constructor(private readonly codexHomes = discoverCodexHomes(), private readonly defaultTaskTitle = "Codex Task") {}
+
+  setMcpApprovalPolicies(policies: McpApprovalPolicy[]) {
+    const next = new Map(policies.map((policy) => [mcpPolicyKey(policy.server, policy.tool), policy]));
+    if (JSON.stringify([...next]) === JSON.stringify([...this.mcpApprovalPolicies])) return;
+    this.mcpApprovalPolicies = next;
+    this.states.clear();
+  }
 
   async refresh(now = Date.now()): Promise<CodexTask[]> {
     if (!this.sessionFiles.length || now - this.lastScanAt >= RESCAN_INTERVAL_MS) await this.scan(now);
@@ -93,6 +111,10 @@ export class CodexLocalActivityReader {
   private async scan(now: number) {
     const collected = new Set<string>();
     for (const home of this.codexHomes) await collectJsonl(path.join(home, "sessions"), collected);
+    this.approvedCommandPrefixes = await readApprovedCommandPrefixes(this.codexHomes);
+    for (const state of this.states.values()) {
+      state.approvedCommandPrefixes = mergePrefixes(state.approvedCommandPrefixes, this.approvedCommandPrefixes);
+    }
     this.sessionFiles = [...collected];
     this.lastScanAt = now;
   }
@@ -108,6 +130,7 @@ export class CodexLocalActivityReader {
         meta,
         openTurn: false,
         pendingApprovalCallIds: new Set(),
+        approvedCommandPrefixes: [...this.approvedCommandPrefixes],
         lastEventAt: 0
       };
       Object.assign(state, await readLastLifecycle(file, size));
@@ -116,7 +139,7 @@ export class CodexLocalActivityReader {
       const usable = start > 0 ? chunk.slice(Math.max(0, chunk.indexOf("\n") + 1)) : chunk;
       const { lines, carry } = completeJsonLines(usable);
       state.carry = carry;
-      applyLocalSessionLines(state, lines);
+      applyLocalSessionLines(state, lines, this.mcpApprovalPolicies);
       state.size = size;
       this.states.set(file, state);
       return state;
@@ -126,7 +149,7 @@ export class CodexLocalActivityReader {
       const text = state.carry + appended;
       const { lines, carry } = completeJsonLines(text);
       state.carry = carry;
-      applyLocalSessionLines(state, lines);
+      applyLocalSessionLines(state, lines, this.mcpApprovalPolicies);
       state.size = size;
     }
     return state;
@@ -162,13 +185,14 @@ export function parseLocalSessionLines(lines: string[]): ParsedLocalEventState {
     meta: { threadId: "fixture" },
     openTurn: false,
     pendingApprovalCallIds: new Set(),
+    approvedCommandPrefixes: [],
     lastEventAt: 0
   };
-  applyLocalSessionLines(state, lines);
+  applyLocalSessionLines(state, lines, new Map());
   return state;
 }
 
-function applyLocalSessionLines(state: SessionState, lines: string[]) {
+function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprovalPolicies: Map<string, McpApprovalPolicy>) {
   for (const line of lines) {
     if (!line.trim()) continue;
     let record: any;
@@ -251,12 +275,14 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         continue;
       }
       if (type === "item_started" || type === "item_completed") {
-        applyItemActivity(state, payload.item, type === "item_completed" ? "completed" : "started", at);
+        applyItemActivity(state, payload.item, type === "item_completed" ? "completed" : "started", at, mcpApprovalPolicies);
       }
       continue;
     }
     if (record?.type === "response_item") {
-      const approvalCallId = escalatedExecCallId(payload);
+      const approvedPrefixes = approvedCommandPrefixes(payload);
+      if (approvedPrefixes.length) state.approvedCommandPrefixes = approvedPrefixes;
+      const approvalCallId = approvalCallIdForItem(state, payload, mcpApprovalPolicies);
       if (approvalCallId) {
         state.pendingApprovalCallIds.add(approvalCallId);
         state.lastActivity = { kind: "approval", phase: "started", at, itemId: approvalCallId };
@@ -269,21 +295,188 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         state.emotionHint = "focus";
         continue;
       }
-      applyItemActivity(state, payload, "progress", at);
+      applyItemActivity(state, payload, "progress", at, mcpApprovalPolicies);
     }
   }
 }
 
-function escalatedExecCallId(item: any) {
+function approvalCallIdForItem(state: SessionState, item: any, mcpApprovalPolicies: Map<string, McpApprovalPolicy>) {
+  return escalatedExecCallId(item, state.approvedCommandPrefixes) || mcpApprovalCallId(item, mcpApprovalPolicies);
+}
+
+function escalatedExecCallId(item: any, approvedPrefixes: string[][] = []) {
   const type = String(item?.type || "").replace(/[\s_-]/g, "").toLowerCase();
   if (!/^(customtoolcall|functioncall)$/.test(type) || String(item?.name || "").toLowerCase() !== "exec") return undefined;
   const input = typeof item?.input === "string" ? item.input : JSON.stringify(item?.input || {});
   if (!/["']?sandbox_permissions["']?\s*:\s*["']require_escalated["']/.test(input)) return undefined;
+  if (usesApprovedCommandPrefix(input, approvedPrefixes)) return undefined;
   return String(item?.call_id || item?.id || "") || undefined;
 }
 
-function applyItemActivity(state: SessionState, item: any, phase: CodexActivitySignal["phase"], at: number) {
-  const kind = activityKindForItem(item);
+function mcpApprovalCallId(item: any, policies: Map<string, McpApprovalPolicy>) {
+  const identity = mcpToolIdentity(item);
+  if (!identity) return undefined;
+  const policy = policies.get(mcpPolicyKey(identity.server, identity.tool));
+  if (!policy || !mcpPolicyRequiresApproval(policy)) return undefined;
+  return String(item?.call_id || item?.id || "") || undefined;
+}
+
+function mcpToolIdentity(item: any) {
+  const type = String(item?.type || "").replace(/[\s_-]/g, "").toLowerCase();
+  if (type === "mcptoolcall" && item?.server && item?.tool) {
+    return { server: String(item.server), tool: String(item.tool) };
+  }
+  if (!/^(customtoolcall|functioncall)$/.test(type) || String(item?.name || "").toLowerCase() !== "exec") return undefined;
+  const input = typeof item?.input === "string" ? item.input : JSON.stringify(item?.input || {});
+  const match = input.match(/tools\.mcp__([a-z0-9_-]+?)__([a-z0-9_-]+)\s*\(/i);
+  return match ? { server: match[1], tool: match[2] } : undefined;
+}
+
+function mcpPolicyRequiresApproval(policy: McpApprovalPolicy) {
+  if (policy.mode === "prompt") return true;
+  if (policy.readOnly === true) return false;
+  if (policy.destructive === true) return true;
+  if (policy.mode === "approve") return false;
+  return policy.mode === "writes" || policy.mode === "auto";
+}
+
+function approvedCommandPrefixes(item: any) {
+  if (String(item?.type || "").toLowerCase() !== "message" || String(item?.role || "").toLowerCase() !== "developer") return [];
+  const text = Array.isArray(item?.content)
+    ? item.content.map((part: any) => typeof part?.text === "string" ? part.text : "").join("\n")
+    : "";
+  if (!/approved command prefixes/i.test(text)) return [];
+  const prefixes: string[][] = [];
+  for (const match of text.matchAll(/^\s*-\s*(\[[^\n]+\])\s*$/gm)) {
+    try {
+      const value = JSON.parse(match[1]);
+      if (Array.isArray(value) && value.length && value.every((part) => typeof part === "string")) prefixes.push(value);
+    } catch {}
+  }
+  return prefixes;
+}
+
+function usesApprovedCommandPrefix(input: string, approvedPrefixes: string[][]) {
+  if (!approvedPrefixes.length) return false;
+  try {
+    const parsed = JSON.parse(input);
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.cmd !== "string") return false;
+      if (Array.isArray(parsed.prefix_rule)
+        && approvedPrefixes.some((allowed) => samePrefix(allowed, parsed.prefix_rule))
+        && commandUsesApprovedPrefix(parsed.cmd, [parsed.prefix_rule])) return true;
+      return commandUsesApprovedPrefix(parsed.cmd, approvedPrefixes);
+    }
+  } catch {}
+  const commandLiteral = input.match(/\bcmd\s*:\s*("(?:\\.|[^"\\])*")/s)?.[1];
+  if (!commandLiteral) return false;
+  let command: string;
+  try { command = String(JSON.parse(commandLiteral)); } catch { return false; }
+  const requestedPrefix = input.match(/\bprefix_rule\s*:\s*(\[[^\]]*\])/s)?.[1];
+  if (requestedPrefix) {
+    try {
+      const parsed = JSON.parse(requestedPrefix);
+      if (Array.isArray(parsed)
+        && approvedPrefixes.some((allowed) => samePrefix(allowed, parsed))
+        && commandUsesApprovedPrefix(command, [parsed])) return true;
+    } catch {}
+  }
+  return commandUsesApprovedPrefix(command, approvedPrefixes);
+}
+
+function commandUsesApprovedPrefix(command: string, approvedPrefixes: string[][]) {
+  const segments = parseShellCommand(command);
+  return !!segments?.length && segments.every((argv) => approvedPrefixes.some((allowed) => argvStartsWith(argv, allowed)));
+}
+
+function parseShellCommand(command: string): string[][] | undefined {
+  const segments: string[][] = [];
+  let argv: string[] = [];
+  let word = "";
+  let wordStarted = false;
+  let quote: "single" | "double" | undefined;
+
+  const pushWord = () => {
+    if (!wordStarted) return;
+    argv.push(word);
+    word = "";
+    wordStarted = false;
+  };
+  const pushSegment = () => {
+    pushWord();
+    if (!argv.length) return false;
+    if (argv[0].includes("=")) return false;
+    segments.push(argv);
+    argv = [];
+    return true;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (quote === "single") {
+      if (character === "'") quote = undefined;
+      else word += character;
+      continue;
+    }
+    if (quote === "double") {
+      if (character === '"') { quote = undefined; continue; }
+      if (character === "$" || character === "`") return undefined;
+      if (character === "\\") {
+        index += 1;
+        if (index >= command.length) return undefined;
+        const escaped = command[index];
+        if (escaped === "\n") continue;
+        word += /[$`"\\]/.test(escaped) ? escaped : `\\${escaped}`;
+      } else word += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character === "'" ? "single" : "double";
+      wordStarted = true;
+      continue;
+    }
+    if (character === "\\") {
+      index += 1;
+      if (index >= command.length) return undefined;
+      word += command[index];
+      wordStarted = true;
+      continue;
+    }
+    if (/[\s]/.test(character)) {
+      pushWord();
+      if (character === "\n" && argv.length && !pushSegment()) return undefined;
+      continue;
+    }
+    if (character === "|" || character === "&" || character === ";") {
+      if (!pushSegment()) return undefined;
+      if (command[index + 1] === character && character !== ";") index += 1;
+      continue;
+    }
+    if (/[<>`$*?()[\]{}#]/.test(character)) return undefined;
+    word += character;
+    wordStarted = true;
+  }
+  if (quote || (!wordStarted && !argv.length && segments.length)) return undefined;
+  if (wordStarted || argv.length) {
+    if (!pushSegment()) return undefined;
+  }
+  return segments;
+}
+
+function argvStartsWith(argv: string[], prefix: string[]) {
+  return prefix.length <= argv.length && prefix.every((part, index) => part === argv[index]);
+}
+
+function samePrefix(left: string[], right: unknown[]) {
+  return left.length === right.length && left.every((part, index) => part === right[index]);
+}
+
+function mcpPolicyKey(server: string, tool: string) {
+  return `${server.toLowerCase()}\0${tool.toLowerCase()}`;
+}
+
+function applyItemActivity(state: SessionState, item: any, phase: CodexActivitySignal["phase"], at: number, mcpApprovalPolicies: Map<string, McpApprovalPolicy>) {
+  const kind = activityKindForItem(state, item, mcpApprovalPolicies);
   if (!kind) return;
   if (kind === "plan" && phase === "completed") {
     state.awaitingPlanConfirmation = true;
@@ -301,8 +494,8 @@ function applyItemActivity(state: SessionState, item: any, phase: CodexActivityS
   }
 }
 
-function activityKindForItem(item: any): CodexActivityKind | undefined {
-  if (escalatedExecCallId(item)) return "approval";
+function activityKindForItem(state: SessionState, item: any, mcpApprovalPolicies: Map<string, McpApprovalPolicy>): CodexActivityKind | undefined {
+  if (approvalCallIdForItem(state, item, mcpApprovalPolicies)) return "approval";
   const text = `${item?.type || ""} ${item?.name || ""} ${item?.tool || ""}`.replace(/[\s_-]/g, "").toLowerCase();
   if (/requestuserinput|approval|elicitation/.test(text)) return "approval";
   if (/contextcompaction|compact/.test(text)) return "context-compaction";
@@ -392,6 +585,32 @@ async function collectJsonl(directory: string, result: Set<string>) {
     if (entry.isDirectory()) await collectJsonl(target, result);
     else if (entry.isFile() && entry.name.endsWith(".jsonl")) result.add(target);
   }));
+}
+
+async function readApprovedCommandPrefixes(codexHomes: string[]) {
+  const prefixes: string[][] = [];
+  for (const home of codexHomes) {
+    let files;
+    try { files = await readdir(path.join(home, "rules"), { withFileTypes: true }); } catch { continue; }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".rules")) continue;
+      let source;
+      try { source = await readFile(path.join(home, "rules", file.name), "utf8"); } catch { continue; }
+      for (const match of source.matchAll(/prefix_rule\s*\(\s*pattern\s*=\s*(\[[^\n]*?\])\s*,\s*decision\s*=\s*["']allow["']/g)) {
+        try {
+          const value = JSON.parse(match[1]);
+          if (Array.isArray(value) && value.length && value.every((part) => typeof part === "string")) prefixes.push(value);
+        } catch {}
+      }
+    }
+  }
+  return mergePrefixes([], prefixes);
+}
+
+function mergePrefixes(left: string[][], right: string[][]) {
+  const result = [...left];
+  for (const prefix of right) if (!result.some((existing) => samePrefix(existing, prefix))) result.push(prefix);
+  return result;
 }
 
 async function readRange(file: string, position: number, length: number) {

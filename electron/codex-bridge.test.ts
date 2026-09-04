@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildMcpApprovalPolicies, CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, rolloutPendingRefs, selectTasks } from "./codex-bridge";
+import { buildMcpApprovalPolicies, CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, isUserBlockingServerRequest, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, rolloutPendingRefs, selectTasks } from "./codex-bridge";
 import { JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { CodexTask } from "./types";
 
@@ -259,6 +259,142 @@ describe("App Server event dispatch", () => {
     expect(isServerRequestMessage({ id: 4, result: {} })).toBe(false);
   });
 
+  it.each([
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+    "item/tool/requestUserInput",
+    "mcpServer/elicitation/request"
+  ])("tracks %s until its request id resolves", (method) => {
+    const bridge = bridgeWithProtocolTask();
+
+    (bridge as any).receive(JSON.stringify({
+      id: "request-1",
+      method,
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "item-1" }
+    }));
+    expect(bridge.overview().hasWaiting).toBe(true);
+
+    (bridge as any).receive(JSON.stringify({
+      method: "serverRequest/resolved",
+      params: { requestId: "request-1" }
+    }));
+    expect(bridge.overview()).toMatchObject({
+      hasWaiting: false,
+      selectedTask: {
+        threadId: "thread-1",
+        status: "processing",
+        activity: { kind: "approval", phase: "completed", itemId: "request-1" }
+      }
+    });
+  });
+
+  it("tracks only documented user-blocking server requests", () => {
+    expect(isUserBlockingServerRequest("item/commandExecution/requestApproval")).toBe(true);
+    expect(isUserBlockingServerRequest("item/commandExecution/notApproval")).toBe(false);
+
+    const bridge = bridgeWithProtocolTask();
+    (bridge as any).receive(JSON.stringify({
+      id: "unknown-request",
+      method: "item/commandExecution/notApproval",
+      params: { threadId: "thread-1", turnId: "turn-1" }
+    }));
+
+    expect(bridge.overview()).toMatchObject({
+      hasWaiting: false,
+      selectedTask: { threadId: "thread-1", status: "processing" }
+    });
+  });
+
+  it("keeps a task waiting until every tracked request id resolves", () => {
+    const bridge = bridgeWithProtocolTask({ activeFlags: ["waitingOnApproval", "waitingOnInput", "serverRequest:legacy", "approvalAudit", "keep-me"] });
+    for (const [id, method] of [["request-1", "item/commandExecution/requestApproval"], ["request-2", "item/tool/requestUserInput"]] as const) {
+      (bridge as any).receive(JSON.stringify({ id, method, params: { threadId: "thread-1", turnId: "turn-1" } }));
+    }
+
+    (bridge as any).receive(JSON.stringify({ method: "serverRequest/resolved", params: { requestId: "request-1" } }));
+    expect(bridge.overview()).toMatchObject({
+      hasWaiting: true,
+      selectedTask: {
+        status: "waiting-input",
+        activeFlags: expect.arrayContaining(["waitingOnApproval", "waitingOnInput", "serverRequest:legacy", "approvalAudit", "keep-me"]),
+        activity: { kind: "approval", phase: "started" }
+      }
+    });
+
+    (bridge as any).receive(JSON.stringify({ method: "serverRequest/resolved", params: { requestId: "request-2" } }));
+    expect(bridge.overview()).toMatchObject({
+      hasWaiting: false,
+      selectedTask: {
+        status: "processing",
+        activeFlags: ["approvalAudit", "keep-me"],
+        activity: { kind: "approval", phase: "completed", itemId: "request-2" }
+      }
+    });
+  });
+
+  it("tracks a documented threadless request globally without creating a task", () => {
+    const bridge = new CodexBridge("/tmp/codex-threadless-request-test");
+
+    (bridge as any).receive(JSON.stringify({
+      id: "threadless-request",
+      method: "mcpServer/elicitation/request",
+      params: {}
+    }));
+
+    expect(bridge.overview()).toMatchObject({ hasWaiting: true, selectedTask: undefined });
+    expect((bridge as any).tasks.size).toBe(0);
+  });
+
+  it("clears protocol requests only for a completed or interrupted turn scope", () => {
+    const bridge = bridgeWithProtocolTask();
+    for (const [id, turnId] of [["turn-1-request", "turn-1"], ["turn-2-request", "turn-2"]] as const) {
+      (bridge as any).receive(JSON.stringify({
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-1", turnId }
+      }));
+    }
+
+    (bridge as any).receive(JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } }
+    }));
+    expect((bridge as any).pendingInteractions.resolve("protocol", "turn-1-request")).toBeUndefined();
+    expect((bridge as any).pendingInteractions.resolve("protocol", "turn-2-request")).toMatchObject({ turnId: "turn-2" });
+
+    (bridge as any).receive(JSON.stringify({
+      id: "interrupted-request",
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", turnId: "turn-2" }
+    }));
+    (bridge as any).tasks.get("thread-1").turnId = "turn-2";
+    (bridge as any).receive(JSON.stringify({
+      method: "thread/status/changed",
+      params: { threadId: "thread-1", status: { type: "interrupted" } }
+    }));
+    expect((bridge as any).pendingInteractions.resolve("protocol", "interrupted-request")).toBeUndefined();
+  });
+
+  it("preserves host and rollout waiting on disconnect but resets everything on stop", () => {
+    const bridge = new CodexBridge("/tmp/codex-disconnect-test");
+    const tracker = (bridge as any).pendingInteractions;
+    tracker.add("protocol", { id: "protocol-request", threadId: "protocol-thread" });
+    tracker.add("rollout", { id: "rollout-request", threadId: "rollout-thread" });
+    tracker.setHostVisible(true);
+    const replace = vi.spyOn(tracker, "replace");
+
+    (bridge as any).handleDisconnect(0);
+
+    expect(replace).toHaveBeenCalledWith("protocol", []);
+    expect(tracker.hasWaiting()).toBe(true);
+    expect(tracker.resolve("protocol", "protocol-request")).toBeUndefined();
+    expect(tracker.resolve("rollout", "rollout-request")).toMatchObject({ id: "rollout-request" });
+
+    bridge.stop();
+    expect(tracker.hasWaiting()).toBe(false);
+  });
+
   it("maps streaming event families to activity signals", () => {
     expect(inferActivitySignal("item/reasoning/summaryTextDelta", {})?.kind).toBe("reasoning");
     expect(inferActivitySignal("turn/plan/updated", {})?.kind).toBe("plan");
@@ -417,6 +553,20 @@ function bridgeWithLocalProcessing(root: string) {
       updatedAt: Date.now()
     }]
   };
+  return bridge;
+}
+
+function bridgeWithProtocolTask(overrides: Partial<CodexTask> = {}) {
+  const bridge = new CodexBridge("/tmp/codex-protocol-test");
+  (bridge as any).tasks.set("thread-1", {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    title: "Protocol test",
+    status: "processing",
+    activeFlags: [],
+    updatedAt: 1,
+    ...overrides
+  });
   return bridge;
 }
 

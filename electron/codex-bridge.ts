@@ -12,6 +12,14 @@ import { PendingInteractionRef, PendingInteractionTracker } from "./pending-inte
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
 
+const USER_BLOCKING_SERVER_REQUESTS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+  "item/tool/requestUserInput",
+  "mcpServer/elicitation/request"
+]);
+
 export interface CodexBridgeDependencies {
   discoverCodexCliCandidates?: () => string[];
   resolveAppServerTransports?: typeof resolveAppServerTransports;
@@ -63,6 +71,7 @@ export class CodexBridge extends EventEmitter {
     this.connected = false;
     this.localInferenceAvailable = false;
     this.subscribedThreads.clear();
+    this.pendingInteractions.reset();
     this.rejectPending(new Error(this.copy.disconnected));
     transport?.close();
   }
@@ -236,7 +245,7 @@ export class CodexBridge extends EventEmitter {
     let message: JsonRpcMessage;
     try { message = JSON.parse(line); } catch { return; }
     if (isServerRequestMessage(message)) {
-      this.handleServerRequest(message.method!, message.params);
+      if (isUserBlockingServerRequest(message.method)) this.handleServerRequest(message.id!, message.method!, message.params);
       return;
     }
     if (message.id !== undefined) {
@@ -250,6 +259,20 @@ export class CodexBridge extends EventEmitter {
   }
 
   private handleNotification(method?: string, params?: any) {
+    if (method === "serverRequest/resolved") {
+      const requestId = String(params?.requestId ?? params?.id ?? "");
+      const resolved = requestId ? this.pendingInteractions.resolve("protocol", requestId) : undefined;
+      if (!resolved) return;
+      const task = resolved.threadId ? this.tasks.get(resolved.threadId) : this.taskForParams(params);
+      if (task && !this.pendingInteractions.hasForThread(task.threadId)) {
+        task.activeFlags = task.activeFlags.filter((flag) => !/^(waitingOnApproval|waitingOnInput|serverRequest:)/i.test(flag));
+        if (task.status === "waiting-input") task.status = "processing";
+        task.updatedAt = Date.now();
+        this.setActivity(task, { kind: "approval", phase: "completed", at: Date.now(), itemId: requestId });
+      }
+      this.emitOverview();
+      return;
+    }
     const task = this.taskForParams(params);
     if (method === "thread/status/changed") {
       if (task) {
@@ -258,13 +281,20 @@ export class CodexBridge extends EventEmitter {
         if (next === "waiting-input") this.setEmotionHint(task, "waiting");
         else if (next === "processing" && !["processing", "waiting-input"].includes(task.status)) this.setEmotionHint(task, "receiving");
         if (next !== "idle" || task.status === "idle") task.status = next;
+        if (isTerminalRuntimeStatus(params?.status)) this.pendingInteractions.clearTurn(task.threadId, task.turnId);
         task.updatedAt = Date.now();
         this.emitOverview();
       }
     } else if (method === "turn/started") {
       if (task) { task.status = "processing"; task.turnId = params?.turn?.id; task.startedAt = Date.now(); task.updatedAt = Date.now(); this.setEmotionHint(task, "receiving"); this.setActivity(task, { kind: "user-message", phase: "completed", at: Date.now(), itemId: params?.turn?.id }); this.emitOverview(); }
     } else if (method === "turn/completed") {
-      if (task) { task.status = mapTurnStatus(params?.turn?.status, task.activeFlags); task.updatedAt = Date.now(); this.setEmotionHint(task, task.status); this.emitOverview(); }
+      if (task) {
+        this.pendingInteractions.clearTurn(task.threadId, params?.turn?.id ?? task.turnId);
+        task.status = mapTurnStatus(params?.turn?.status, task.activeFlags);
+        task.updatedAt = Date.now();
+        this.setEmotionHint(task, task.status);
+        this.emitOverview();
+      }
     } else if (method === "item/started") {
       if (task) {
         const hint = inferItemEmotion(params?.item);
@@ -296,14 +326,19 @@ export class CodexBridge extends EventEmitter {
     }
   }
 
-  private handleServerRequest(method: string, params: any) {
+  private handleServerRequest(requestId: number | string, method: string, params: any) {
     const task = this.taskForParams(params);
-    if (!task) return;
+    this.pendingInteractions.add("protocol", {
+      id: String(requestId),
+      threadId: task?.threadId ?? params?.threadId,
+      turnId: params?.turnId ?? task?.turnId
+    });
+    if (!task) { this.emitOverview(); return; }
     task.status = "waiting-input";
     task.activeFlags = [...new Set([...task.activeFlags, requestFlag(method)])];
     task.updatedAt = Date.now();
     this.setEmotionHint(task, /approval/i.test(method) ? "waiting" : "restricted");
-    this.setActivity(task, { kind: "approval", phase: "started", at: Date.now(), itemId: params?.itemId ?? params?.requestId });
+    this.setActivity(task, { kind: "approval", phase: "started", at: Date.now(), itemId: params?.itemId ?? String(requestId) });
     this.emitOverview();
   }
 
@@ -408,7 +443,7 @@ export class CodexBridge extends EventEmitter {
 
   private rejectPending(error: Error) { this.pending.forEach(({ reject }) => reject(error)); this.pending.clear(); }
   private isConnectionCurrent(generation: number) { return !this.stopped && generation === this.connectionGeneration; }
-  private handleDisconnect(generation: number) { if (!this.isConnectionCurrent(generation)) return; this.connected = false; this.transport = undefined; this.subscribedThreads.clear(); this.rejectPending(new Error(this.copy.disconnected)); this.emitOverview(); this.scheduleReconnect(); }
+  private handleDisconnect(generation: number) { if (!this.isConnectionCurrent(generation)) return; this.connected = false; this.transport = undefined; this.subscribedThreads.clear(); this.pendingInteractions.replace("protocol", []); this.rejectPending(new Error(this.copy.disconnected)); this.emitOverview(); this.scheduleReconnect(); }
   private handleError(error: unknown) { this.lastError = error instanceof Error ? error.message : String(error); this.emitOverview(); }
   private scheduleReconnect() { if (!this.reconnectTimer && !this.stopped) this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.connect(); }, 4000); }
   private emitOverview() { this.emit("overview", this.makeOverview()); }
@@ -525,6 +560,10 @@ export function inferItemEmotion(item: any, completed = false): string {
 
 export function isServerRequestMessage(message: JsonRpcMessage) {
   return message.id !== undefined && typeof message.method === "string";
+}
+
+export function isUserBlockingServerRequest(method?: string) {
+  return !!method && USER_BLOCKING_SERVER_REQUESTS.has(method);
 }
 
 export function inferActivitySignal(method?: string, params?: any): CodexActivitySignal | undefined {
@@ -668,6 +707,11 @@ function normalizeSourceKind(value: unknown) {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") return Object.keys(value as Record<string, unknown>)[0];
   return undefined;
+}
+
+function isTerminalRuntimeStatus(status: any) {
+  const type = String(typeof status === "object" ? status?.type : status || "").toLowerCase();
+  return ["completed", "complete", "succeeded", "success", "failed", "error", "systemerror", "interrupted", "stopped", "cancelled", "canceled"].includes(type);
 }
 
 function requestFlag(method: string) {

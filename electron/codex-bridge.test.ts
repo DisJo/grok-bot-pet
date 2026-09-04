@@ -333,6 +333,69 @@ describe("App Server event dispatch", () => {
     });
   });
 
+  it("keeps outstanding protocol waits visible through ordinary status and activity notifications", () => {
+    const bridge = bridgeWithProtocolTask();
+    for (const id of ["request-1", "request-2"]) {
+      (bridge as any).receive(JSON.stringify({
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-1", turnId: "turn-1", itemId: id }
+      }));
+    }
+
+    (bridge as any).receive(JSON.stringify({
+      method: "thread/status/changed",
+      params: { threadId: "thread-1", status: { type: "active", activeFlags: [] } }
+    }));
+    (bridge as any).receive(JSON.stringify({
+      method: "item/commandExecution/requestApproval/completed",
+      params: { threadId: "thread-1", item: { id: "unrelated-item" } }
+    }));
+
+    expect(bridge.overview()).toMatchObject({
+      hasWaiting: true,
+      selectedTask: {
+        status: "waiting-input",
+        activeFlags: ["waitingOnApproval"],
+        activity: { kind: "approval", phase: "started", itemId: "request-2" }
+      }
+    });
+
+    (bridge as any).receive(JSON.stringify({ method: "serverRequest/resolved", params: { requestId: "request-1" } }));
+    expect(bridge.overview().selectedTask).toMatchObject({ status: "waiting-input" });
+    (bridge as any).receive(JSON.stringify({ method: "serverRequest/resolved", params: { requestId: "request-2" } }));
+    expect(bridge.overview().selectedTask).toMatchObject({ status: "processing" });
+  });
+
+  it("uses a nested turn scope for protocol requests and terminal status cleanup", () => {
+    const bridge = bridgeWithProtocolTask({ turnId: "old-turn" });
+    (bridge as any).receive(JSON.stringify({
+      id: "nested-request",
+      method: "item/fileChange/requestApproval",
+      params: { turn: { id: "nested-turn", threadId: "thread-1" } }
+    }));
+
+    (bridge as any).receive(JSON.stringify({
+      method: "thread/status/changed",
+      params: { turn: { id: "nested-turn", threadId: "thread-1" }, status: { type: "interrupted" } }
+    }));
+
+    expect((bridge as any).pendingInteractions.resolve("protocol", "nested-request")).toBeUndefined();
+    expect(bridge.overview().selectedTask).toMatchObject({ status: "stopped" });
+  });
+
+  it("keeps a completed turn terminal even when another turn still has a pending identity", () => {
+    const bridge = bridgeWithProtocolTask({ activeFlags: ["waitingOnApproval"] });
+    (bridge as any).pendingInteractions.add("protocol", { id: "other-turn", threadId: "thread-1", turnId: "turn-2" });
+
+    (bridge as any).receive(JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } }
+    }));
+
+    expect(bridge.overview().selectedTask).toMatchObject({ status: "completed" });
+  });
+
   it("tracks a documented threadless request globally without creating a task", () => {
     const bridge = new CodexBridge("/tmp/codex-threadless-request-test");
 

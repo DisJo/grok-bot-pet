@@ -276,27 +276,29 @@ export class CodexBridge extends EventEmitter {
     const task = this.taskForParams(params);
     if (method === "thread/status/changed") {
       if (task) {
-        const next = mapRuntimeStatus(params?.status);
+        const terminal = isTerminalRuntimeStatus(params?.status);
+        if (terminal) this.pendingInteractions.clearTurn(task.threadId, turnIdForParams(params, task));
+        if (this.pendingInteractions.hasForThread(task.threadId) && !terminal) { this.emitOverview(); return; }
+        const next = terminal ? mapTurnStatus(params?.status) : mapRuntimeStatus(params?.status);
         task.activeFlags = params?.status?.activeFlags || [];
         if (next === "waiting-input") this.setEmotionHint(task, "waiting");
         else if (next === "processing" && !["processing", "waiting-input"].includes(task.status)) this.setEmotionHint(task, "receiving");
         if (next !== "idle" || task.status === "idle") task.status = next;
-        if (isTerminalRuntimeStatus(params?.status)) this.pendingInteractions.clearTurn(task.threadId, task.turnId);
         task.updatedAt = Date.now();
         this.emitOverview();
       }
     } else if (method === "turn/started") {
-      if (task) { task.status = "processing"; task.turnId = params?.turn?.id; task.startedAt = Date.now(); task.updatedAt = Date.now(); this.setEmotionHint(task, "receiving"); this.setActivity(task, { kind: "user-message", phase: "completed", at: Date.now(), itemId: params?.turn?.id }); this.emitOverview(); }
+      if (task && !this.pendingInteractions.hasForThread(task.threadId)) { task.status = "processing"; task.turnId = params?.turn?.id; task.startedAt = Date.now(); task.updatedAt = Date.now(); this.setEmotionHint(task, "receiving"); this.setActivity(task, { kind: "user-message", phase: "completed", at: Date.now(), itemId: params?.turn?.id }); this.emitOverview(); }
     } else if (method === "turn/completed") {
       if (task) {
-        this.pendingInteractions.clearTurn(task.threadId, params?.turn?.id ?? task.turnId);
-        task.status = mapTurnStatus(params?.turn?.status, task.activeFlags);
+        this.pendingInteractions.clearTurn(task.threadId, turnIdForParams(params, task));
+        task.status = mapTurnStatus(params?.turn?.status);
         task.updatedAt = Date.now();
         this.setEmotionHint(task, task.status);
         this.emitOverview();
       }
     } else if (method === "item/started") {
-      if (task) {
+      if (task && !this.pendingInteractions.hasForThread(task.threadId)) {
         const hint = inferItemEmotion(params?.item);
         task.status = hint === "waiting" ? "waiting-input" : hint === "error" ? "error" : "processing";
         task.updatedAt = Date.now(); this.setEmotionHint(task, hint);
@@ -306,6 +308,7 @@ export class CodexBridge extends EventEmitter {
     } else if (method === "item/completed") {
       if (task) {
         const hint = inferItemEmotion(params?.item, true);
+        if (this.pendingInteractions.hasForThread(task.threadId) && hint !== "error") { this.emitOverview(); return; }
         if (hint === "error") task.status = "error";
         task.updatedAt = Date.now(); this.setEmotionHint(task, hint);
         const signal = inferActivitySignal(method, params); if (signal) this.setActivity(task, signal);
@@ -314,6 +317,8 @@ export class CodexBridge extends EventEmitter {
     } else if (task) {
       const signal = inferActivitySignal(method, params);
       if (!signal) return;
+      const terminal = signal.kind === "error" || signal.phase === "failed";
+      if (this.pendingInteractions.hasForThread(task.threadId) && !terminal) { this.emitOverview(); return; }
       this.setActivity(task, signal);
       task.updatedAt = signal.at;
       if (signal.kind === "approval") {
@@ -330,8 +335,8 @@ export class CodexBridge extends EventEmitter {
     const task = this.taskForParams(params);
     this.pendingInteractions.add("protocol", {
       id: String(requestId),
-      threadId: task?.threadId ?? params?.threadId,
-      turnId: params?.turnId ?? task?.turnId
+      threadId: task?.threadId ?? threadIdForParams(params),
+      turnId: turnIdForParams(params, task)
     });
     if (!task) { this.emitOverview(); return; }
     task.status = "waiting-input";
@@ -343,7 +348,7 @@ export class CodexBridge extends EventEmitter {
   }
 
   private taskForParams(params: any) {
-    const threadId = params?.threadId ?? params?.thread?.id ?? params?.turn?.threadId ?? params?.conversationId;
+    const threadId = threadIdForParams(params);
     return threadId ? this.tasks.get(threadId) : undefined;
   }
 
@@ -707,6 +712,14 @@ function normalizeSourceKind(value: unknown) {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") return Object.keys(value as Record<string, unknown>)[0];
   return undefined;
+}
+
+function turnIdForParams(params: any, task?: CodexTask) {
+  return params?.turnId ?? params?.turn?.id ?? task?.turnId;
+}
+
+function threadIdForParams(params: any) {
+  return params?.threadId ?? params?.thread?.id ?? params?.turn?.threadId ?? params?.conversationId;
 }
 
 function isTerminalRuntimeStatus(status: any) {

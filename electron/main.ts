@@ -227,7 +227,9 @@ app.whenReady().then(async () => {
   await loadSettings();
   app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
   createWindow(); createTray(); startPointerTracking();
-  bridge = new CodexBridge(undefined, localizedCopy(appLocale).data); bridge.start();
+  bridge = new CodexBridge(undefined, localizedCopy(appLocale).data, {
+    codexApprovalVisible: (promptForPermission) => nativeWindowBridge.codexApprovalVisible(promptForPermission)
+  }); bridge.start();
   bridge.on("overview", (overview) => { lastOverview = overview; win?.webContents.send("codex:overview", overview); settingsWin?.webContents.send("codex:overview", overview); rebuildTrayMenu(); });
 });
 

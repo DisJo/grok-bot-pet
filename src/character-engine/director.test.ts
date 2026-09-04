@@ -115,6 +115,26 @@ describe("animation director", () => {
     expect(directive.statusColorRole).toBe("waiting");
   });
 
+  it("lets a threadless global wait outrank fresh command activity", () => {
+    const command = {
+      threadId: "thread-1", title: "Command", status: "processing" as const,
+      activeFlags: [], updatedAt: 10_000,
+      activity: { kind: "command" as const, phase: "progress" as const, at: 10_000 }
+    };
+
+    expect(baseDirective(overview({ hasWaiting: true, selectedTask: command }), 10_100).statusColorRole).toBe("waiting");
+  });
+
+  it("clears the global waiting color when the host panel disappears", () => {
+    const command = {
+      threadId: "thread-1", title: "Command", status: "processing" as const,
+      activeFlags: [], updatedAt: 10_000,
+      activity: { kind: "command" as const, phase: "progress" as const, at: 10_000 }
+    };
+
+    expect(baseDirective(overview({ hasWaiting: false, selectedTask: command }), 10_100).statusColorRole).toBeUndefined();
+  });
+
   it("does not show the waiting color while approval activity is still processing", () => {
     const task = { threadId: "t", title: "T", status: "processing" as const, activeFlags: [], updatedAt: 5000, activity: { kind: "approval" as const, phase: "started" as const, at: 5000 } };
 

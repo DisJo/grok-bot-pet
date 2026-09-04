@@ -183,7 +183,7 @@ function isAwaitingApproval(task?: CodexTask) {
 }
 
 function hasAwaitingApproval(overview: CodexOverview) {
-  return [overview.selectedTask, ...overview.recentTasks].some(isAwaitingApproval);
+  return overview.hasWaiting || [overview.selectedTask, ...overview.recentTasks].some(isAwaitingApproval);
 }
 
 function beats(...values: Array<[GrokState, number, number, GrokOneShot?, StatusColorRole?]>): Beat[] {

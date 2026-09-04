@@ -25,6 +25,7 @@ export interface CodexBridgeDependencies {
   resolveAppServerTransports?: typeof resolveAppServerTransports;
   connectUnixSocketWebSocket?: typeof connectUnixSocketWebSocket;
   connectStdioJsonRpc?: typeof connectStdioJsonRpc;
+  codexApprovalVisible?: (promptForPermission: boolean) => boolean | undefined;
 }
 
 export class CodexBridge extends EventEmitter {
@@ -36,6 +37,8 @@ export class CodexBridge extends EventEmitter {
   private lastError?: string;
   private refreshTimer?: NodeJS.Timeout;
   private reconnectTimer?: NodeJS.Timeout;
+  private approvalObserverTimer?: NodeJS.Timeout;
+  private approvalPermissionPrompted = false;
   private stopped = false;
   private subscribedThreads = new Set<string>();
   private connecting?: Promise<void>;
@@ -56,6 +59,8 @@ export class CodexBridge extends EventEmitter {
 
   start() {
     this.stopped = false;
+    this.pollHostApproval();
+    this.approvalObserverTimer = setInterval(() => this.pollHostApproval(), 500);
     void this.refresh();
     this.refreshTimer = setInterval(() => void this.refresh(), 2000);
   }
@@ -65,6 +70,7 @@ export class CodexBridge extends EventEmitter {
     this.connectionGeneration += 1;
     if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = undefined; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
+    if (this.approvalObserverTimer) { clearInterval(this.approvalObserverTimer); this.approvalObserverTimer = undefined; }
     const transport = this.transport;
     this.transport = undefined;
     this.connecting = undefined;
@@ -77,6 +83,16 @@ export class CodexBridge extends EventEmitter {
   }
 
   overview(): CodexOverview { return this.makeOverview(); }
+
+  private pollHostApproval() {
+    const observe = this.dependencies.codexApprovalVisible;
+    if (!observe) return;
+    const prompt = !this.approvalPermissionPrompted;
+    this.approvalPermissionPrompted = true;
+    const visible = observe(prompt);
+    const changed = this.pendingInteractions.setHostVisible(visible === true);
+    if (changed) this.emitOverview();
+  }
 
   async refresh(): Promise<CodexOverview> {
     if (!this.connected) void this.connect();

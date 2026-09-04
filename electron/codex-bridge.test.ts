@@ -27,6 +27,56 @@ describe("Codex status mapping", () => {
   });
 });
 
+describe("host approval observer", () => {
+  it("prompts once, emits only on host visibility transitions, and stops polling", () => {
+    vi.useFakeTimers();
+    try {
+      const samples: Array<boolean | undefined> = [undefined, false, true, true, false];
+      const promptFlags: boolean[] = [];
+      const bridge = new CodexBridge("/tmp/codex-host-observer-test", undefined, {
+        codexApprovalVisible: (prompt) => { promptFlags.push(prompt); return samples.shift(); }
+      });
+      (bridge as any).refresh = async () => bridge.overview();
+      const overviews: boolean[] = [];
+      bridge.on("overview", (value) => overviews.push(value.hasWaiting));
+
+      bridge.start();
+      vi.advanceTimersByTime(2_000);
+      bridge.stop();
+      const callsAtStop = promptFlags.length;
+      vi.advanceTimersByTime(1_000);
+
+      expect(promptFlags[0]).toBe(true);
+      expect(promptFlags.slice(1).every((value) => value === false)).toBe(true);
+      expect(overviews).toEqual([true, false]);
+      expect(promptFlags).toHaveLength(callsAtStop);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores an unavailable native sample without disturbing other pending waits", () => {
+    const samples: Array<boolean | undefined> = [true, undefined];
+    const bridge = new CodexBridge("/tmp/codex-host-unavailable-test", undefined, {
+      codexApprovalVisible: () => samples.shift()
+    });
+    const tracker = (bridge as any).pendingInteractions;
+    tracker.add("protocol", { id: "protocol-request", threadId: "protocol-thread" });
+    tracker.add("rollout", { id: "rollout-request", threadId: "rollout-thread" });
+    const overviews: boolean[] = [];
+    bridge.on("overview", (value) => overviews.push(value.hasWaiting));
+
+    (bridge as any).pollHostApproval();
+    (bridge as any).pollHostApproval();
+
+    expect(bridge.overview()).toMatchObject({ hasWaiting: true, lastError: undefined });
+    expect(tracker.resolve("protocol", "protocol-request")).toMatchObject({ id: "protocol-request" });
+    expect(tracker.resolve("rollout", "rollout-request")).toMatchObject({ id: "rollout-request" });
+    expect(tracker.hasWaiting()).toBe(false);
+    expect(overviews).toEqual([true, true]);
+  });
+});
+
 describe("Codex refresh fallback", () => {
   it("keeps only stable rollout approval identities", () => {
     const task = (overrides: Partial<CodexTask>): CodexTask => ({

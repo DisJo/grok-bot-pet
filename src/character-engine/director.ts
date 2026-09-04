@@ -139,9 +139,9 @@ export function baseDirective(overview: CodexOverview, now: number): CharacterDi
   const task = overview.selectedTask;
   if (hasAwaitingApproval(overview)) return directive("listening", 90, undefined, "waiting");
   if (!task) return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10);
-  if (task.status === "error") return directive("sad", 95);
-  if (task.status === "stopped") return directive("sad", 90);
-  if (task.status === "completed") return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10);
+  if (task.status === "error") return directive("sad", 95, undefined, "error");
+  if (task.status === "stopped") return directive("sad", 90, undefined, "stopped");
+  if (task.status === "completed") return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10, undefined, "completed");
   const activity = task.activity;
   if (activity && now - activity.at < 6500) {
     if (activity.phase === "failed") return directive("alerting", 95, undefined, "error");
@@ -151,7 +151,7 @@ export function baseDirective(overview: CodexOverview, now: number): CharacterDi
       return directive(activity.kind === "approval" ? "working" : ACTIVITY_STATE[activity.kind], activity.kind === "approval" ? 60 : 65, undefined, statusColorRole);
     }
   }
-  if (task.status === "waiting-input") return directive(now - task.updatedAt > 18_000 ? "suspicious" : "listening", 90);
+  if (task.status === "waiting-input") return directive(now - task.updatedAt > 18_000 ? "suspicious" : "listening", 90, undefined, "waiting");
   if (task.status === "processing" || task.status === "receiving") return directive(task.status === "receiving" ? "receiving" : "working", 60);
   return directive(IDLE_CYCLE[Math.floor(now / 6500) % IDLE_CYCLE.length], 10);
 }

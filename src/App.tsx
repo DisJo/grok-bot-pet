@@ -111,6 +111,7 @@ export default function App() {
           bodyColor={settings.statusColorsEnabled && directive.statusColorRole
             ? settings.statusColors[directive.statusColorRole]
             : settings.bodyColor}
+          baseBodyColor={settings.bodyColor}
           eyeColor={settings.eyeColor}
         />
         {settings.showBadge && overview.activeCount > 0 && <span className="count-badge">{overview.activeCount}</span>}

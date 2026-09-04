@@ -48,7 +48,7 @@ describe("animation director", () => {
     expect(director.next(overview({ selectedTask: task, activeCount: 1 }), 10_100).state).toBe("listening");
   });
 
-  it("colors every beat of completed, failed and stopped result flows", () => {
+  it("keeps completed, failed and stopped colors active while the terminal task remains", () => {
     const cases = [
       { status: "completed" as const, role: "completed", after: 13200, samples: [[5000, "sending"], [5700, "celebrate"], [8300, "laughing"], [9700, "proud"], [11300, "happy"]] },
       { status: "error" as const, role: "error", after: 10300, samples: [[5000, "alerting"], [5800, "scared"], [6750, "angry"], [8050, "sad"]] },
@@ -64,7 +64,7 @@ describe("animation director", () => {
         expect(next.state).toBe(state);
         expect(next.statusColorRole).toBe(entry.role);
       }
-      expect(director.next(overview({ selectedTask: task }), entry.after).statusColorRole).toBeUndefined();
+      expect(director.next(overview({ selectedTask: task }), entry.after).statusColorRole).toBe(entry.role);
     }
   });
 
@@ -73,7 +73,7 @@ describe("animation director", () => {
     director.next(overview(), 0);
     const completed = { threadId: "t", turnId: "turn-1", title: "T", status: "completed" as const, activeFlags: [], updatedAt: 100 };
     const directive = director.next(overview({ selectedTask: completed, recentTasks: [completed] }), 100);
-    expect(directive.statusColorRole).toBeUndefined();
+    expect(directive.statusColorRole).toBe("completed");
     expect(directive.state).not.toBe("sending");
   });
 
@@ -85,7 +85,7 @@ describe("animation director", () => {
     director.next(overview({ connected: false }), 2000);
     const failed = { ...processing, status: "error" as const, updatedAt: 3000 };
     const directive = director.next(overview({ selectedTask: failed, recentTasks: [failed] }), 3000);
-    expect(directive.statusColorRole).toBeUndefined();
+    expect(directive.statusColorRole).toBe("error");
     expect(directive.state).not.toBe("alerting");
   });
 
@@ -99,12 +99,12 @@ describe("animation director", () => {
     expect(director.next(overview({ selectedTask: resumed }), 7700).statusColorRole).toBeUndefined();
   });
 
-  it("does not show the waiting color for input without an approval request", () => {
+  it("keeps the waiting color active for input without an approval request", () => {
     const task = { threadId: "t", title: "T", status: "waiting-input" as const, activeFlags: [], updatedAt: 5000 };
 
     const directive = baseDirective(overview({ selectedTask: task }), 5100);
 
-    expect(directive.statusColorRole).toBeUndefined();
+    expect(directive.statusColorRole).toBe("waiting");
   });
 
   it("shows the waiting color for a user-choice input request", () => {

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { CharacterDirective, GrokCharacterInstance, GrokOneShot } from "./types";
+import { CharacterDirective, GrokCharacterInstance, GrokOneShot, StatusColorRole } from "./types";
 
 export interface GrokCharacterHandle {
   play(oneShot: GrokOneShot): void;
@@ -11,6 +11,7 @@ interface Props {
   gaze: { x: number; y: number };
   size: number;
   bodyColor: "black" | "gray" | "brown" | "red" | "orange" | "yellow" | "green" | "cyan" | "blue" | "violet" | "magenta";
+  baseBodyColor: "black" | "gray" | "brown" | "red" | "orange" | "yellow" | "green" | "cyan" | "blue" | "violet" | "magenta";
   eyeColor: string;
 }
 
@@ -21,7 +22,7 @@ export function prefersReducedMotion(matchMedia: (query: string) => { matches: b
 }
 
 export const GrokCharacter = forwardRef<GrokCharacterHandle, Props>(function GrokCharacter(
-  { directive, pointerFollowing, gaze, size, bodyColor, eyeColor }, ref
+  { directive, pointerFollowing, gaze, size, bodyColor, baseBodyColor, eyeColor }, ref
 ) {
   const svgRef = useRef<SVGSVGElement>(null);
   const engineRef = useRef<GrokCharacterInstance | undefined>(undefined);
@@ -64,7 +65,29 @@ export const GrokCharacter = forwardRef<GrokCharacterHandle, Props>(function Gro
     if (colorAnimation.current !== undefined) cancelAnimationFrame(colorAnimation.current);
     const from = currentInk.current;
     const to = BODY_INK[bodyColor];
+    const base = BODY_INK[baseBodyColor];
     const reduceMotion = prefersReducedMotion();
+    const statusBehavior = statusColorBehavior(directive.statusColorRole);
+    const pulse = statusBehavior === "breathe" && to !== base;
+    if (pulse && !reduceMotion) {
+      const startedAt = performance.now();
+      const initialColor = statusPulseInk(0, to, base, false);
+      engine.setInk(initialColor);
+      currentInk.current = initialColor;
+      const tick = (now: number) => {
+        const color = statusPulseInk(now - startedAt, to, base, false);
+        if (color !== currentInk.current) {
+          engine.setInk(color);
+          currentInk.current = color;
+        }
+        colorAnimation.current = requestAnimationFrame(tick);
+      };
+      colorAnimation.current = requestAnimationFrame(tick);
+      return () => {
+        if (colorAnimation.current !== undefined) cancelAnimationFrame(colorAnimation.current);
+        colorAnimation.current = undefined;
+      };
+    }
     if (reduceMotion || from === to) {
       engine.setInk(to);
       currentInk.current = to;
@@ -87,7 +110,7 @@ export const GrokCharacter = forwardRef<GrokCharacterHandle, Props>(function Gro
       if (colorAnimation.current !== undefined) cancelAnimationFrame(colorAnimation.current);
       colorAnimation.current = undefined;
     };
-  }, [bodyColor, eyeColor]);
+  }, [baseBodyColor, bodyColor, directive.statusColorRole, eyeColor]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -125,6 +148,18 @@ function play(engine: GrokCharacterInstance, oneShot: GrokOneShot) {
   else if (oneShot === "spin") engine.spinOnce(1);
   else if (oneShot === "burst") engine.burstOnce();
   else { engine.spinOnce(4); engine.burstOnce(); }
+}
+
+export function statusPulseInk(elapsed: number, statusInk: string, baseInk: string, reduceMotion: boolean) {
+  if (reduceMotion) return statusInk;
+  const phase = elapsed % 2400;
+  const intensity = Math.round((1 - Math.cos((phase / 2400) * Math.PI * 2)) * 500_000) / 1_000_000;
+  return interpolateHex(baseInk, statusInk, intensity);
+}
+
+export function statusColorBehavior(role: StatusColorRole | undefined): "breathe" | undefined {
+  if (role) return "breathe";
+  return undefined;
 }
 
 function interpolateHex(from: string, to: string, amount: number) {

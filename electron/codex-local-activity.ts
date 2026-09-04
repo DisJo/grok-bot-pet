@@ -24,6 +24,7 @@ interface SessionState {
   turnId?: string;
   startedAt?: number;
   openTurn: boolean;
+  pendingApprovalCallIds: Set<string>;
   terminalStatus?: CodexTaskStatus;
   awaitingPlanConfirmation?: boolean;
   lastActivity?: CodexActivitySignal;
@@ -64,7 +65,7 @@ export class CodexLocalActivityReader {
         const state = await this.updateState(file, info.size);
         const updatedAt = Math.max(info.mtimeMs, state.lastEventAt);
         const recentlyWritten = now - info.mtimeMs <= ACTIVE_WRITE_WINDOW_MS;
-        const status: CodexTaskStatus = state.awaitingPlanConfirmation ? "waiting-input"
+        const status: CodexTaskStatus = state.awaitingPlanConfirmation || state.pendingApprovalCallIds.size > 0 ? "waiting-input"
           : state.openTurn && recentlyWritten
             ? state.lastActivity?.kind === "approval" && state.lastActivity.phase !== "completed" ? "waiting-input" : "processing"
             : state.terminalStatus || "idle";
@@ -106,6 +107,7 @@ export class CodexLocalActivityReader {
         carry: "",
         meta,
         openTurn: false,
+        pendingApprovalCallIds: new Set(),
         lastEventAt: 0
       };
       Object.assign(state, await readLastLifecycle(file, size));
@@ -159,6 +161,7 @@ export function parseLocalSessionLines(lines: string[]): ParsedLocalEventState {
     carry: "",
     meta: { threadId: "fixture" },
     openTurn: false,
+    pendingApprovalCallIds: new Set(),
     lastEventAt: 0
   };
   applyLocalSessionLines(state, lines);
@@ -190,6 +193,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         state.startedAt = normalizeTimestamp(payload.started_at) || at;
         state.terminalStatus = undefined;
         state.awaitingPlanConfirmation = false;
+        state.pendingApprovalCallIds.clear();
         state.lastActivity = { kind: "user-message", phase: "completed", at, itemId: state.turnId };
         state.emotionHint = "receiving";
         continue;
@@ -199,6 +203,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         state.turnId = payload.turn_id || state.turnId;
         if (payload.error != null) {
           state.awaitingPlanConfirmation = false;
+          state.pendingApprovalCallIds.clear();
           state.terminalStatus = "error";
           state.lastActivity = { kind: "error", phase: "failed", at, itemId: state.turnId };
           state.emotionHint = "error";
@@ -210,6 +215,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
           continue;
         }
         state.terminalStatus = "completed";
+        state.pendingApprovalCallIds.clear();
         state.lastActivity = { kind: "agent-output", phase: "completed", at, itemId: state.turnId };
         state.emotionHint = "completed";
         continue;
@@ -217,6 +223,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
       if (/aborted|interrupted|cancelled|canceled|stopped/.test(type)) {
         state.openTurn = false;
         state.awaitingPlanConfirmation = false;
+        state.pendingApprovalCallIds.clear();
         state.terminalStatus = "stopped";
         state.emotionHint = "stopped";
         continue;
@@ -224,6 +231,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
       if (/error|failed|panic/.test(type)) {
         state.openTurn = false;
         state.awaitingPlanConfirmation = false;
+        state.pendingApprovalCallIds.clear();
         state.terminalStatus = "error";
         state.lastActivity = { kind: "error", phase: "failed", at, itemId: payload.item_id };
         state.emotionHint = "error";
@@ -231,6 +239,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
       }
       if (type === "user_message") {
         state.awaitingPlanConfirmation = false;
+        state.pendingApprovalCallIds.clear();
         state.terminalStatus = "completed";
         state.lastActivity = { kind: "user-message", phase: "completed", at, itemId: state.turnId };
         state.emotionHint = "receiving";
@@ -246,8 +255,31 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
       }
       continue;
     }
-    if (record?.type === "response_item") applyItemActivity(state, payload, "progress", at);
+    if (record?.type === "response_item") {
+      const approvalCallId = escalatedExecCallId(payload);
+      if (approvalCallId) {
+        state.pendingApprovalCallIds.add(approvalCallId);
+        state.lastActivity = { kind: "approval", phase: "started", at, itemId: approvalCallId };
+        state.emotionHint = "waiting";
+        continue;
+      }
+      const completedCallId = String(payload?.call_id || "");
+      if (completedCallId && state.pendingApprovalCallIds.delete(completedCallId)) {
+        state.lastActivity = { kind: "approval", phase: "completed", at, itemId: completedCallId };
+        state.emotionHint = "focus";
+        continue;
+      }
+      applyItemActivity(state, payload, "progress", at);
+    }
   }
+}
+
+function escalatedExecCallId(item: any) {
+  const type = String(item?.type || "").replace(/[\s_-]/g, "").toLowerCase();
+  if (!/^(customtoolcall|functioncall)$/.test(type) || String(item?.name || "").toLowerCase() !== "exec") return undefined;
+  const input = typeof item?.input === "string" ? item.input : JSON.stringify(item?.input || {});
+  if (!/["']?sandbox_permissions["']?\s*:\s*["']require_escalated["']/.test(input)) return undefined;
+  return String(item?.call_id || item?.id || "") || undefined;
 }
 
 function applyItemActivity(state: SessionState, item: any, phase: CodexActivitySignal["phase"], at: number) {
@@ -270,9 +302,7 @@ function applyItemActivity(state: SessionState, item: any, phase: CodexActivityS
 }
 
 function activityKindForItem(item: any): CodexActivityKind | undefined {
-  const input = typeof item?.input === "string" ? item.input : JSON.stringify(item?.input || {});
-  const isEscalated = /["']?sandbox_permissions["']?\s*:\s*["']require_escalated["']/.test(input);
-  if (isEscalated && String(item?.status || "").toLowerCase() !== "completed") return "approval";
+  if (escalatedExecCallId(item)) return "approval";
   const text = `${item?.type || ""} ${item?.name || ""} ${item?.tool || ""}`.replace(/[\s_-]/g, "").toLowerCase();
   if (/requestuserinput|approval|elicitation/.test(text)) return "approval";
   if (/contextcompaction|compact/.test(text)) return "context-compaction";

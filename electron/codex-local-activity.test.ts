@@ -53,7 +53,7 @@ describe("local Codex activity inference", () => {
     });
   });
 
-  it("keeps an automatically approved escalated exec call in the working state", async () => {
+  it("reports a Desktop escalated exec call as waiting despite its completed envelope status", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -66,18 +66,57 @@ describe("local Codex activity inference", () => {
         id: "call-auto-approved",
         name: "exec",
         status: "completed",
-        input: JSON.stringify({
+        call_id: "call-auto-approved",
+        input: `const result = await tools.exec_command({
           cmd: "ps -axo pid=,command=",
-          sandbox_permissions: "require_escalated"
-        })
+          sandbox_permissions: "require_escalated",
+          justification: "Allow a read-only process check?"
+        });`
       })
     ].join("\n") + "\n");
 
     const tasks = await new CodexLocalActivityReader([root]).refresh();
     expect(tasks[0]).toMatchObject({
       threadId: "thread-auto-approved",
+      status: "waiting-input",
+      activity: { kind: "approval", phase: "started", itemId: "call-auto-approved" }
+    });
+  });
+
+  it("leaves approval waiting when the matching Desktop tool output arrives", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions", "2026", "09", "02");
+    mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, "rollout-approved.jsonl");
+    const now = new Date().toISOString();
+    writeFileSync(file, [
+      line(now, "session_meta", { id: "thread-approved", cwd: "/tmp/project", source: "vscode" }),
+      line(now, "event_msg", { type: "task_started", turn_id: "turn-approved" }),
+      line(now, "response_item", {
+        type: "custom_tool_call",
+        id: "tool-approved",
+        call_id: "call-approved",
+        name: "exec",
+        status: "completed",
+        input: `const result = await tools.exec_command({
+          cmd: "pwd",
+          sandbox_permissions: "require_escalated",
+          justification: "Allow pwd?"
+        });`
+      }),
+      line(now, "response_item", {
+        type: "custom_tool_call_output",
+        id: "tool-output-approved",
+        call_id: "call-approved",
+        output: [{ type: "input_text", text: "/tmp/project" }]
+      })
+    ].join("\n") + "\n");
+
+    const tasks = await new CodexLocalActivityReader([root]).refresh();
+    expect(tasks[0]).toMatchObject({
+      threadId: "thread-approved",
       status: "processing",
-      activity: { kind: "command", phase: "progress" }
+      activity: { kind: "approval", phase: "completed", itemId: "call-approved" }
     });
   });
 
@@ -104,8 +143,8 @@ describe("local Codex activity inference", () => {
     const tasks = await new CodexLocalActivityReader([root]).refresh();
     expect(tasks[0]).toMatchObject({
       threadId: "thread-unflushed",
-      status: "processing",
-      activity: { kind: "command", phase: "progress" }
+      status: "waiting-input",
+      activity: { kind: "approval", phase: "started", itemId: "call-unflushed" }
     });
   });
 

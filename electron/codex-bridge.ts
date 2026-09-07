@@ -8,7 +8,7 @@ import { localizedCopy, LocalizedDataCopy } from "./localization";
 import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
 import { connectStdioJsonRpc, connectUnixSocketWebSocket, JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { PendingInteractionRef, PendingInteractionTracker } from "./pending-interaction-tracker";
-import { WaitingDiagnostics, WaitingDiagnosticsSink } from "./waiting-diagnostics";
+import type { WaitingDiagnosticsSink } from "./waiting-diagnostics";
 
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
@@ -49,7 +49,7 @@ export class CodexBridge extends EventEmitter {
   private mcpPoliciesUpdatedAt = 0;
   private readonly localActivity: CodexLocalActivityReader;
   private readonly pendingInteractions = new PendingInteractionTracker();
-  private readonly waitingDiagnostics: WaitingDiagnosticsSink;
+  private readonly waitingDiagnostics?: WaitingDiagnosticsSink;
   private waitingDiagnosticsStarted = false;
 
   constructor(
@@ -59,12 +59,12 @@ export class CodexBridge extends EventEmitter {
   ) {
     super();
     this.localActivity = new CodexLocalActivityReader([codexHome], copy.codexTask);
-    this.waitingDiagnostics = dependencies.waitingDiagnostics ?? new WaitingDiagnostics();
+    this.waitingDiagnostics = dependencies.waitingDiagnostics;
   }
 
   start() {
     this.stopped = false;
-    if (!this.waitingDiagnosticsStarted) {
+    if (this.waitingDiagnostics && !this.waitingDiagnosticsStarted) {
       this.waitingDiagnosticsStarted = true;
       try { this.waitingDiagnostics.reset(); } catch {}
       this.recordWaitingDiagnostics();
@@ -482,6 +482,7 @@ export class CodexBridge extends EventEmitter {
   private scheduleReconnect() { if (!this.reconnectTimer && !this.stopped) this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.connect(); }, 4000); }
   private emitOverview() { this.recordWaitingDiagnostics(); this.emit("overview", this.makeOverview()); }
   private recordWaitingDiagnostics() {
+    if (!this.waitingDiagnostics) return;
     try {
       const tasks = [...this.tasks.values()];
       const protocolPending = this.pendingInteractions.count("protocol");

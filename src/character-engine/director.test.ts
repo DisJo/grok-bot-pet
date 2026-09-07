@@ -143,11 +143,11 @@ describe("animation director", () => {
     expect(directive.statusColorRole).toBeUndefined();
   });
 
-  it("returns to global waiting after completed, failed and stopped result flows", () => {
+  it("keeps global waiting when background tasks complete, fail, or stop", () => {
     const cases = [
-      { status: "completed" as const, role: "completed", after: 13_200 },
-      { status: "error" as const, role: "error", after: 10_300 },
-      { status: "stopped" as const, role: "stopped", after: 7_900 }
+      { status: "completed" as const, after: 13_200 },
+      { status: "error" as const, after: 10_300 },
+      { status: "stopped" as const, after: 7_900 }
     ];
 
     for (const entry of cases) {
@@ -157,7 +157,7 @@ describe("animation director", () => {
       director.next(overview({ hasWaiting: true, selectedTask: waiting, recentTasks: [waiting, processing] }), 4000);
       const terminal = { ...processing, status: entry.status, updatedAt: 5000 };
 
-      expect(director.next(overview({ hasWaiting: true, selectedTask: waiting, recentTasks: [waiting, terminal] }), 5000).statusColorRole).toBe(entry.role);
+      expect(director.next(overview({ hasWaiting: true, selectedTask: waiting, recentTasks: [waiting, terminal] }), 5000).statusColorRole).toBe("waiting");
       expect(director.next(overview({ hasWaiting: true, selectedTask: waiting, recentTasks: [waiting, terminal] }), entry.after).statusColorRole).toBe("waiting");
     }
   });
@@ -195,7 +195,7 @@ describe("animation director", () => {
     expect(result.statusColorRole).toBe("completed");
   });
 
-  it("bursts particles when a background task completes", () => {
+  it("does not preempt a selected processing task when a background task completes", () => {
     const director = new AnimationDirector();
     director.next(overview(), 0);
     const selected = { threadId: "selected", turnId: "turn-a", title: "Selected", status: "processing" as const, activeFlags: [], updatedAt: 4000 };
@@ -204,12 +204,9 @@ describe("animation director", () => {
 
     const completed = { ...background, status: "completed" as const, updatedAt: 5000 };
     const result = director.next(overview({ selectedTask: selected, recentTasks: [completed] }), 5000);
-    expect(result.state).toBe("sending");
-    expect(result.oneShot).toBe("burst");
-    expect(result.statusColorRole).toBe("completed");
-
-    const repeated = director.next(overview({ selectedTask: selected, recentTasks: [{ ...completed, updatedAt: 7000 }] }), 5200);
-    expect(repeated.expiresAt).toBe(result.expiresAt);
+    expect(result.state).toBe("working");
+    expect(result.oneShot).toBeUndefined();
+    expect(result.statusColorRole).toBeUndefined();
   });
 
   it("deduplicates a completed turn but still bursts for the next turn in the same thread", () => {

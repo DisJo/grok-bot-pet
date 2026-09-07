@@ -74,16 +74,11 @@ export class AnimationDirector {
     }
 
     if (!overview.connected || wasConnected !== true) return undefined;
-    const terminal = tasks
-      .filter((task) => {
-        if (!["completed", "error", "stopped"].includes(task.status) || !this.resultArmedThreads.has(task.threadId)) return false;
-        return !this.playedResultKeys.has(resultKey(task));
-      })
-      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (terminal) {
-      this.resultArmedThreads.delete(terminal.threadId);
-      this.rememberPlayedResult(resultKey(terminal));
-    }
+    const terminal = overview.selectedTask;
+    if (!terminal || !["completed", "error", "stopped"].includes(terminal.status)) return undefined;
+    if (!this.resultArmedThreads.has(terminal.threadId) || this.playedResultKeys.has(resultKey(terminal))) return undefined;
+    this.resultArmedThreads.delete(terminal.threadId);
+    this.rememberPlayedResult(resultKey(terminal));
     return terminal;
   }
 

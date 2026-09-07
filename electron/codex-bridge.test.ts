@@ -28,6 +28,35 @@ describe("Codex status mapping", () => {
 });
 
 describe("host approval observer", () => {
+  it("resets diagnostics and records a fresh initial snapshot after restart", () => {
+    let resets = 0;
+    const records: unknown[] = [];
+    const bridge = new CodexBridge("/tmp/codex-waiting-diagnostics-restart-test", undefined, {
+      waitingDiagnostics: { reset: () => { resets += 1; }, record: (snapshot: unknown) => records.push(snapshot) }
+    } as any);
+    (bridge as any).refresh = async () => bridge.overview();
+    (bridge as any).pendingInteractions.add("protocol", { id: "protocol-request" });
+
+    bridge.start();
+    bridge.start();
+    bridge.stop();
+    bridge.start();
+    bridge.start();
+    bridge.stop();
+
+    expect(resets).toBe(2);
+    expect(records).toEqual([
+      {
+        timestamp: expect.any(Number), protocolPending: 1, rolloutPending: 0,
+        hostVisible: false, taskFallbackPending: 0, waiting: true
+      },
+      {
+        timestamp: expect.any(Number), protocolPending: 0, rolloutPending: 0,
+        hostVisible: false, taskFallbackPending: 0, waiting: false
+      }
+    ]);
+  });
+
   it("records waiting-source snapshots without allowing diagnostics failures to affect the overview", () => {
     const records: unknown[] = [];
     const bridge = new CodexBridge("/tmp/codex-waiting-diagnostics-test", undefined, {

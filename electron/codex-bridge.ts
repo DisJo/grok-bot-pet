@@ -79,6 +79,7 @@ export class CodexBridge extends EventEmitter {
 
   stop() {
     this.stopped = true;
+    this.waitingDiagnosticsStarted = false;
     this.connectionGeneration += 1;
     if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = undefined; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }

@@ -46,7 +46,7 @@ describe("local Codex activity inference", () => {
     expect(state.lastActivity?.kind).not.toBe("approval");
   });
 
-  it("reports an unfinished escalated exec call as waiting for approval", async () => {
+  it("keeps an unfinished auto-executed escalated exec call processing with command activity", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -70,12 +70,12 @@ describe("local Codex activity inference", () => {
     const tasks = await new CodexLocalActivityReader([root]).refresh();
     expect(tasks[0]).toMatchObject({
       threadId: "thread-approval",
-      status: "waiting-input",
-      activity: { kind: "approval" }
+      status: "processing",
+      activity: { kind: "command" }
     });
   });
 
-  it("reports a Desktop escalated exec call as waiting despite its completed envelope status", async () => {
+  it("keeps a completed-envelope Desktop escalated exec call processing with command activity", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -100,12 +100,12 @@ describe("local Codex activity inference", () => {
     const tasks = await new CodexLocalActivityReader([root]).refresh();
     expect(tasks[0]).toMatchObject({
       threadId: "thread-auto-approved",
-      status: "waiting-input",
-      activity: { kind: "approval", phase: "started", itemId: "call-auto-approved" }
+      status: "processing",
+      activity: { kind: "command", phase: "progress", itemId: "call-auto-approved" }
     });
   });
 
-  it("leaves approval waiting when the matching Desktop tool output arrives", async () => {
+  it("reports command activity when an auto-executed Desktop tool output arrives", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -138,7 +138,7 @@ describe("local Codex activity inference", () => {
     expect(tasks[0]).toMatchObject({
       threadId: "thread-approved",
       status: "processing",
-      activity: { kind: "approval", phase: "completed", itemId: "call-approved" }
+      activity: { kind: "command", phase: "progress", itemId: "tool-output-approved" }
     });
   });
 
@@ -283,7 +283,7 @@ describe("local Codex activity inference", () => {
     });
   });
 
-  it("still waits when an approved prefix does not match the requested command", async () => {
+  it("keeps an escalated command processing when an approved prefix does not match", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     const rules = path.join(root, "rules");
@@ -306,12 +306,12 @@ describe("local Codex activity inference", () => {
     ].join("\n") + "\n");
 
     expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
-      status: "waiting-input",
-      activity: { kind: "approval" }
+      status: "processing",
+      activity: { kind: "command" }
     });
   });
 
-  it("still waits when only the first segment of a compound command is approved", async () => {
+  it("keeps an escalated compound command processing when only its first segment is approved", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     const rules = path.join(root, "rules");
@@ -334,8 +334,8 @@ describe("local Codex activity inference", () => {
     ].join("\n") + "\n");
 
     expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
-      status: "waiting-input",
-      activity: { kind: "approval" }
+      status: "processing",
+      activity: { kind: "command" }
     });
   });
 
@@ -366,7 +366,7 @@ describe("local Codex activity inference", () => {
     });
   });
 
-  it("preserves unknown backslash escapes inside double quotes when matching argv", async () => {
+  it("keeps an escalated command with unknown backslash escapes processing", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     const rules = path.join(root, "rules");
@@ -388,8 +388,8 @@ describe("local Codex activity inference", () => {
     ].join("\n") + "\n");
 
     expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
-      status: "waiting-input",
-      activity: { kind: "approval" }
+      status: "processing",
+      activity: { kind: "command" }
     });
   });
 
@@ -420,7 +420,7 @@ describe("local Codex activity inference", () => {
     expect((await reader.refresh())[0]).toMatchObject({ status: "processing" });
   });
 
-  it("reads a complete approval record before the writer appends a newline", async () => {
+  it("reads an unflushed complete escalated exec record as command activity", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -443,8 +443,8 @@ describe("local Codex activity inference", () => {
     const tasks = await new CodexLocalActivityReader([root]).refresh();
     expect(tasks[0]).toMatchObject({
       threadId: "thread-unflushed",
-      status: "waiting-input",
-      activity: { kind: "approval", phase: "started", itemId: "call-unflushed" }
+      status: "processing",
+      activity: { kind: "command", phase: "progress", itemId: "call-unflushed" }
     });
   });
 

@@ -53,6 +53,14 @@ export class PendingInteractionTracker {
     return this.hostVisible || [...this.entries.values()].some((entries) => entries.size > 0);
   }
 
+  count(source: PendingInteractionSource) {
+    return this.entries.get(source)!.size;
+  }
+
+  isHostVisible() {
+    return this.hostVisible;
+  }
+
   hasForThread(threadId: string) {
     return [...this.entries.values()].some((entries) => [...entries.values()].some((ref) => ref.threadId === threadId));
   }

@@ -28,6 +28,39 @@ describe("Codex status mapping", () => {
 });
 
 describe("host approval observer", () => {
+  it("records waiting-source snapshots without allowing diagnostics failures to affect the overview", () => {
+    const records: unknown[] = [];
+    const bridge = new CodexBridge("/tmp/codex-waiting-diagnostics-test", undefined, {
+      waitingDiagnostics: { reset: () => {}, record: (snapshot: unknown) => records.push(snapshot) }
+    } as any);
+    (bridge as any).refresh = async () => bridge.overview();
+    const tracker = (bridge as any).pendingInteractions;
+    tracker.add("protocol", { id: "protocol-request" });
+    tracker.add("rollout", { id: "rollout-request" });
+    tracker.setHostVisible(true);
+    (bridge as any).tasks.set("task", {
+      threadId: "task", title: "Task", status: "waiting-input", activeFlags: ["waitingOnApproval"], updatedAt: 1,
+      activity: { kind: "approval", phase: "started", at: 1 }
+    });
+
+    bridge.start();
+    bridge.stop();
+    expect(bridge.overview().hasWaiting).toBe(true);
+    expect(records).toEqual([{
+      timestamp: expect.any(Number), protocolPending: 1, rolloutPending: 1,
+      hostVisible: true, taskFallbackPending: 1, waiting: true
+    }]);
+
+    const failingBridge = new CodexBridge("/tmp/codex-waiting-diagnostics-failure-test", undefined, {
+      waitingDiagnostics: { reset: () => { throw new Error("diagnostic reset failed"); }, record: () => { throw new Error("diagnostic write failed"); } }
+    } as any);
+    (failingBridge as any).refresh = async () => failingBridge.overview();
+    expect(() => failingBridge.start()).not.toThrow();
+    failingBridge.stop();
+    expect(() => failingBridge.overview()).not.toThrow();
+    expect(failingBridge.overview().hasWaiting).toBe(false);
+  });
+
   it("prompts once, emits only on host visibility transitions, and stops polling", () => {
     vi.useFakeTimers();
     try {

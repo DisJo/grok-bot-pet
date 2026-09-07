@@ -8,6 +8,7 @@ import { localizedCopy, LocalizedDataCopy } from "./localization";
 import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
 import { connectStdioJsonRpc, connectUnixSocketWebSocket, JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { PendingInteractionRef, PendingInteractionTracker } from "./pending-interaction-tracker";
+import { WaitingDiagnostics, WaitingDiagnosticsSink } from "./waiting-diagnostics";
 
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
@@ -26,6 +27,7 @@ export interface CodexBridgeDependencies {
   connectUnixSocketWebSocket?: typeof connectUnixSocketWebSocket;
   connectStdioJsonRpc?: typeof connectStdioJsonRpc;
   codexApprovalVisible?: (promptForPermission: boolean) => boolean | undefined;
+  waitingDiagnostics?: WaitingDiagnosticsSink;
 }
 
 export class CodexBridge extends EventEmitter {
@@ -47,6 +49,8 @@ export class CodexBridge extends EventEmitter {
   private mcpPoliciesUpdatedAt = 0;
   private readonly localActivity: CodexLocalActivityReader;
   private readonly pendingInteractions = new PendingInteractionTracker();
+  private readonly waitingDiagnostics: WaitingDiagnosticsSink;
+  private waitingDiagnosticsStarted = false;
 
   constructor(
     private readonly codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
@@ -55,10 +59,16 @@ export class CodexBridge extends EventEmitter {
   ) {
     super();
     this.localActivity = new CodexLocalActivityReader([codexHome], copy.codexTask);
+    this.waitingDiagnostics = dependencies.waitingDiagnostics ?? new WaitingDiagnostics();
   }
 
   start() {
     this.stopped = false;
+    if (!this.waitingDiagnosticsStarted) {
+      this.waitingDiagnosticsStarted = true;
+      try { this.waitingDiagnostics.reset(); } catch {}
+      this.recordWaitingDiagnostics();
+    }
     if (!this.approvalObserverTimer) {
       this.pollHostApproval();
       this.approvalObserverTimer = setInterval(() => this.pollHostApproval(), 500);
@@ -469,7 +479,20 @@ export class CodexBridge extends EventEmitter {
   private handleDisconnect(generation: number) { if (!this.isConnectionCurrent(generation)) return; this.connected = false; this.transport = undefined; this.subscribedThreads.clear(); this.pendingInteractions.replace("protocol", []); this.rejectPending(new Error(this.copy.disconnected)); this.emitOverview(); this.scheduleReconnect(); }
   private handleError(error: unknown) { this.lastError = error instanceof Error ? error.message : String(error); this.emitOverview(); }
   private scheduleReconnect() { if (!this.reconnectTimer && !this.stopped) this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.connect(); }, 4000); }
-  private emitOverview() { this.emit("overview", this.makeOverview()); }
+  private emitOverview() { this.recordWaitingDiagnostics(); this.emit("overview", this.makeOverview()); }
+  private recordWaitingDiagnostics() {
+    try {
+      const tasks = [...this.tasks.values()];
+      const protocolPending = this.pendingInteractions.count("protocol");
+      const rolloutPending = this.pendingInteractions.count("rollout");
+      const hostVisible = this.pendingInteractions.isHostVisible();
+      const taskFallbackPending = tasks.filter(isAwaitingApproval).length;
+      this.waitingDiagnostics.record({
+        timestamp: Date.now(), protocolPending, rolloutPending, hostVisible, taskFallbackPending,
+        waiting: protocolPending > 0 || rolloutPending > 0 || hostVisible || taskFallbackPending > 0
+      });
+    } catch {}
+  }
   private makeOverview(): CodexOverview {
     const tasks = [...this.tasks.values()];
     const selected = selectTasks(tasks);

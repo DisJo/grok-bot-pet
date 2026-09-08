@@ -9,7 +9,6 @@ import { EMPTY_CODEX_OVERVIEW } from "./defaults";
 import { isFinitePoint, movePetWindow, petHitTargetContains, petMovementBounds, petOffsetForCenter, petWindowPositionForCenter, petWindowSize, settingsWindowBounds, type PetBounds, type PetPoint } from "./pet-window";
 import { AppLocale, localizedCopy, resolveAppLocale } from "./localization";
 import { NativeWindowBridge } from "./native-window-bridge";
-import { WaitingDiagnostics } from "./waiting-diagnostics";
 
 let win: BrowserWindow | undefined;
 let settingsWin: BrowserWindow | undefined;
@@ -229,8 +228,7 @@ app.whenReady().then(async () => {
   app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
   createWindow(); createTray(); startPointerTracking();
   bridge = new CodexBridge(undefined, localizedCopy(appLocale).data, {
-    codexApprovalVisible: (promptForPermission) => nativeWindowBridge.codexApprovalVisible(promptForPermission),
-    waitingDiagnostics: new WaitingDiagnostics()
+    codexApprovalVisible: (promptForPermission) => nativeWindowBridge.codexApprovalVisible(promptForPermission)
   }); bridge.start();
   bridge.on("overview", (overview) => { lastOverview = overview; win?.webContents.send("codex:overview", overview); settingsWin?.webContents.send("codex:overview", overview); rebuildTrayMenu(); });
 });

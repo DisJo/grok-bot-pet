@@ -3,12 +3,11 @@ import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import path from "node:path";
 import { CodexActivityKind, CodexActivitySignal, CodexOverview, CodexTask, CodexTaskStatus } from "./types";
-import { CodexLocalActivityReader, McpApprovalPolicy } from "./codex-local-activity";
+import { CodexLocalActivityReader } from "./codex-local-activity";
 import { localizedCopy, LocalizedDataCopy } from "./localization";
 import { appServerTransports, prepareSharedCodexDaemon, SharedDaemonOptions } from "./codex-daemon";
 import { connectStdioJsonRpc, connectUnixSocketWebSocket, JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { PendingInteractionRef, PendingInteractionTracker } from "./pending-interaction-tracker";
-import type { WaitingDiagnosticsSink } from "./waiting-diagnostics";
 
 type JsonRpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 export type SharedDaemonPreparer = (options: SharedDaemonOptions) => Promise<boolean>;
@@ -27,7 +26,6 @@ export interface CodexBridgeDependencies {
   connectUnixSocketWebSocket?: typeof connectUnixSocketWebSocket;
   connectStdioJsonRpc?: typeof connectStdioJsonRpc;
   codexApprovalVisible?: (promptForPermission: boolean) => boolean | undefined;
-  waitingDiagnostics?: WaitingDiagnosticsSink;
 }
 
 export class CodexBridge extends EventEmitter {
@@ -46,11 +44,8 @@ export class CodexBridge extends EventEmitter {
   private connecting?: Promise<void>;
   private connectionGeneration = 0;
   private localInferenceAvailable = false;
-  private mcpPoliciesUpdatedAt = 0;
   private readonly localActivity: CodexLocalActivityReader;
   private readonly pendingInteractions = new PendingInteractionTracker();
-  private readonly waitingDiagnostics?: WaitingDiagnosticsSink;
-  private waitingDiagnosticsStarted = false;
 
   constructor(
     private readonly codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
@@ -59,16 +54,10 @@ export class CodexBridge extends EventEmitter {
   ) {
     super();
     this.localActivity = new CodexLocalActivityReader([codexHome], copy.codexTask);
-    this.waitingDiagnostics = dependencies.waitingDiagnostics;
   }
 
   start() {
     this.stopped = false;
-    if (this.waitingDiagnostics && !this.waitingDiagnosticsStarted) {
-      this.waitingDiagnosticsStarted = true;
-      try { this.waitingDiagnostics.reset(); } catch {}
-      this.recordWaitingDiagnostics();
-    }
     if (!this.approvalObserverTimer) {
       this.pollHostApproval();
       this.approvalObserverTimer = setInterval(() => this.pollHostApproval(), 500);
@@ -79,7 +68,6 @@ export class CodexBridge extends EventEmitter {
 
   stop() {
     this.stopped = true;
-    this.waitingDiagnosticsStarted = false;
     this.connectionGeneration += 1;
     if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = undefined; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
@@ -125,7 +113,6 @@ export class CodexBridge extends EventEmitter {
   }
 
   private async refreshAppServer() {
-    void this.refreshMcpApprovalPolicies();
     let response: any;
     try {
       response = await this.request("thread/list", {
@@ -151,23 +138,6 @@ export class CodexBridge extends EventEmitter {
       const detail = await this.request("thread/read", { threadId: raw.id, includeTurns: true });
       this.applyThreadRead(raw.id, detail);
     }));
-  }
-
-  private async refreshMcpApprovalPolicies() {
-    const now = Date.now();
-    if (now - this.mcpPoliciesUpdatedAt < 12_000) return;
-    this.mcpPoliciesUpdatedAt = now;
-    try {
-      const [configResponse, statusResponse] = await Promise.all([
-        this.request("config/read", { includeLayers: false }),
-        this.request("mcpServerStatus/list", { detail: "toolsAndAuthOnly", limit: 100 })
-      ]);
-      const config = configResponse?.config ?? configResponse;
-      const servers = statusResponse?.data ?? statusResponse?.servers ?? [];
-      this.localActivity.setMcpApprovalPolicies(buildMcpApprovalPolicies(config, servers));
-    } catch {
-      // Older App Server versions may not expose MCP policy metadata.
-    }
   }
 
   private connect() {
@@ -480,21 +450,7 @@ export class CodexBridge extends EventEmitter {
   private handleDisconnect(generation: number) { if (!this.isConnectionCurrent(generation)) return; this.connected = false; this.transport = undefined; this.subscribedThreads.clear(); this.pendingInteractions.replace("protocol", []); this.rejectPending(new Error(this.copy.disconnected)); this.emitOverview(); this.scheduleReconnect(); }
   private handleError(error: unknown) { this.lastError = error instanceof Error ? error.message : String(error); this.emitOverview(); }
   private scheduleReconnect() { if (!this.reconnectTimer && !this.stopped) this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.connect(); }, 4000); }
-  private emitOverview() { this.recordWaitingDiagnostics(); this.emit("overview", this.makeOverview()); }
-  private recordWaitingDiagnostics() {
-    if (!this.waitingDiagnostics) return;
-    try {
-      const tasks = [...this.tasks.values()];
-      const protocolPending = this.pendingInteractions.count("protocol");
-      const rolloutPending = this.pendingInteractions.count("rollout");
-      const hostVisible = this.pendingInteractions.isHostVisible();
-      const taskFallbackPending = tasks.filter(isAwaitingApproval).length;
-      this.waitingDiagnostics.record({
-        timestamp: Date.now(), protocolPending, rolloutPending, hostVisible, taskFallbackPending,
-        waiting: protocolPending > 0 || rolloutPending > 0 || hostVisible || taskFallbackPending > 0
-      });
-    } catch {}
-  }
+  private emitOverview() { this.emit("overview", this.makeOverview()); }
   private makeOverview(): CodexOverview {
     const tasks = [...this.tasks.values()];
     const selected = selectTasks(tasks);
@@ -519,37 +475,6 @@ export async function resolveAppServerTransports(
     path.join(codexHome, "app-server-control", "app-server-control.sock"),
     daemonReady
   );
-}
-
-export function buildMcpApprovalPolicies(config: any, servers: any[]): McpApprovalPolicy[] {
-  const policies: McpApprovalPolicy[] = [];
-  for (const server of servers) {
-    const serverName = String(server?.name || "");
-    if (!serverName) continue;
-    const directConfig = config?.mcp_servers?.[serverName];
-    const pluginConfig = server?.pluginId ? config?.plugins?.[server.pluginId]?.mcp_servers?.[serverName] : undefined;
-    const serverConfig = pluginConfig ?? directConfig ?? {};
-    for (const [toolKey, tool] of Object.entries<any>(server?.tools ?? {})) {
-      const toolName = String(tool?.name || toolKey);
-      const mode = serverConfig?.tools?.[toolName]?.approval_mode
-        ?? serverConfig?.default_tools_approval_mode
-        ?? "auto";
-      if (!["auto", "prompt", "writes", "approve"].includes(mode)) continue;
-      policies.push({
-        server: serverName,
-        tool: toolName,
-        mode,
-        readOnly: booleanAnnotation(tool?.annotations, "readOnlyHint", "read_only_hint"),
-        destructive: booleanAnnotation(tool?.annotations, "destructiveHint", "destructive_hint")
-      });
-    }
-  }
-  return policies;
-}
-
-function booleanAnnotation(value: any, camelCase: string, snakeCase: string) {
-  const candidate = value?.[camelCase] ?? value?.[snakeCase];
-  return typeof candidate === "boolean" ? candidate : undefined;
 }
 
 function isAwaitingApproval(task: CodexTask) {

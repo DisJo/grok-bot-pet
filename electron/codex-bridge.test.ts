@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { buildMcpApprovalPolicies, CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, isUserBlockingServerRequest, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, rolloutPendingRefs, selectTasks } from "./codex-bridge";
+import { CodexBridge, CodexBridgeDependencies, inferActivitySignal, inferItemEmotion, inferPersistedTaskStatus, isServerRequestMessage, isUserBlockingServerRequest, mapRuntimeStatus, mapTurnStatus, resolveAppServerTransports, rolloutPendingRefs, selectTasks } from "./codex-bridge";
 import { JsonRpcTransport, JsonRpcTransportHandlers } from "./codex-transport";
 import { CodexTask } from "./types";
 
@@ -28,68 +28,6 @@ describe("Codex status mapping", () => {
 });
 
 describe("host approval observer", () => {
-  it("resets diagnostics and records a fresh initial snapshot after restart", () => {
-    let resets = 0;
-    const records: unknown[] = [];
-    const bridge = new CodexBridge("/tmp/codex-waiting-diagnostics-restart-test", undefined, {
-      waitingDiagnostics: { reset: () => { resets += 1; }, record: (snapshot: unknown) => records.push(snapshot) }
-    } as any);
-    (bridge as any).refresh = async () => bridge.overview();
-    (bridge as any).pendingInteractions.add("protocol", { id: "protocol-request" });
-
-    bridge.start();
-    bridge.start();
-    bridge.stop();
-    bridge.start();
-    bridge.start();
-    bridge.stop();
-
-    expect(resets).toBe(2);
-    expect(records).toEqual([
-      {
-        timestamp: expect.any(Number), protocolPending: 1, rolloutPending: 0,
-        hostVisible: false, taskFallbackPending: 0, waiting: true
-      },
-      {
-        timestamp: expect.any(Number), protocolPending: 0, rolloutPending: 0,
-        hostVisible: false, taskFallbackPending: 0, waiting: false
-      }
-    ]);
-  });
-
-  it("records waiting-source snapshots without allowing diagnostics failures to affect the overview", () => {
-    const records: unknown[] = [];
-    const bridge = new CodexBridge("/tmp/codex-waiting-diagnostics-test", undefined, {
-      waitingDiagnostics: { reset: () => {}, record: (snapshot: unknown) => records.push(snapshot) }
-    } as any);
-    (bridge as any).refresh = async () => bridge.overview();
-    const tracker = (bridge as any).pendingInteractions;
-    tracker.add("protocol", { id: "protocol-request" });
-    tracker.add("rollout", { id: "rollout-request" });
-    tracker.setHostVisible(true);
-    (bridge as any).tasks.set("task", {
-      threadId: "task", title: "Task", status: "waiting-input", activeFlags: ["waitingOnApproval"], updatedAt: 1,
-      activity: { kind: "approval", phase: "started", at: 1 }
-    });
-
-    bridge.start();
-    bridge.stop();
-    expect(bridge.overview().hasWaiting).toBe(true);
-    expect(records).toEqual([{
-      timestamp: expect.any(Number), protocolPending: 1, rolloutPending: 1,
-      hostVisible: true, taskFallbackPending: 1, waiting: true
-    }]);
-
-    const failingBridge = new CodexBridge("/tmp/codex-waiting-diagnostics-failure-test", undefined, {
-      waitingDiagnostics: { reset: () => { throw new Error("diagnostic reset failed"); }, record: () => { throw new Error("diagnostic write failed"); } }
-    } as any);
-    (failingBridge as any).refresh = async () => failingBridge.overview();
-    expect(() => failingBridge.start()).not.toThrow();
-    failingBridge.stop();
-    expect(() => failingBridge.overview()).not.toThrow();
-    expect(failingBridge.overview().hasWaiting).toBe(false);
-  });
-
   it("prompts once, emits only on host visibility transitions, and stops polling", () => {
     vi.useFakeTimers();
     try {
@@ -254,62 +192,6 @@ describe("Codex refresh fallback", () => {
     waiting = false;
     expect((await bridge.refresh()).hasWaiting).toBe(false);
     expect(replace).toHaveBeenLastCalledWith("rollout", []);
-  });
-});
-
-describe("MCP approval policy discovery", () => {
-  it("backs off policy discovery after App Server rejects the metadata requests", async () => {
-    const bridge = new CodexBridge("/tmp/codex-policy-backoff-test");
-    let requestCount = 0;
-    (bridge as any).request = async () => {
-      requestCount += 1;
-      throw new Error("method not found");
-    };
-
-    await (bridge as any).refreshMcpApprovalPolicies();
-    await (bridge as any).refreshMcpApprovalPolicies();
-
-    expect(requestCount).toBe(2);
-  });
-
-  it("does not block thread refresh while policy discovery is pending", async () => {
-    const bridge = new CodexBridge("/tmp/codex-policy-background-test");
-    (bridge as any).request = async (method: string) => {
-      if (method === "config/read" || method === "mcpServerStatus/list") return new Promise(() => {});
-      if (method === "thread/list") return { data: [] };
-      throw new Error(`unexpected request: ${method}`);
-    };
-
-    const refreshed = await Promise.race([
-      (bridge as any).refreshAppServer().then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20))
-    ]);
-
-    expect(refreshed).toBe(true);
-  });
-
-  it("combines effective config overrides with live tool annotations", () => {
-    expect(buildMcpApprovalPolicies({
-      mcp_servers: {
-        codegraph: { tools: { codegraph_explore: { approval_mode: "approve" } } },
-        safe: { default_tools_approval_mode: "writes" }
-      }
-    }, [{
-      name: "codegraph",
-      tools: {
-        codegraph_context: { name: "codegraph_context" },
-        codegraph_explore: { name: "codegraph_explore" }
-      }
-    }, {
-      name: "safe",
-      tools: {
-        read: { name: "read", annotations: { readOnlyHint: true } }
-      }
-    }])).toEqual([
-      { server: "codegraph", tool: "codegraph_context", mode: "auto", readOnly: undefined, destructive: undefined },
-      { server: "codegraph", tool: "codegraph_explore", mode: "approve", readOnly: undefined, destructive: undefined },
-      { server: "safe", tool: "read", mode: "writes", readOnly: true, destructive: undefined }
-    ]);
   });
 });
 

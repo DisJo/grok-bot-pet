@@ -24,20 +24,11 @@ interface SessionState {
   turnId?: string;
   startedAt?: number;
   openTurn: boolean;
-  pendingApprovalCallIds: Set<string>;
   terminalStatus?: CodexTaskStatus;
   awaitingPlanConfirmation?: boolean;
   lastActivity?: CodexActivitySignal;
   emotionHint?: string;
   lastEventAt: number;
-}
-
-export interface McpApprovalPolicy {
-  server: string;
-  tool: string;
-  mode: "auto" | "prompt" | "writes" | "approve";
-  readOnly?: boolean;
-  destructive?: boolean;
 }
 
 export interface ParsedLocalEventState {
@@ -54,16 +45,7 @@ export class CodexLocalActivityReader {
   private sessionFiles: string[] = [];
   private lastScanAt = 0;
   private states = new Map<string, SessionState>();
-  private mcpApprovalPolicies = new Map<string, McpApprovalPolicy>();
-
   constructor(private readonly codexHomes = discoverCodexHomes(), private readonly defaultTaskTitle = "Codex Task") {}
-
-  setMcpApprovalPolicies(policies: McpApprovalPolicy[]) {
-    const next = new Map(policies.map((policy) => [mcpPolicyKey(policy.server, policy.tool), policy]));
-    if (JSON.stringify([...next]) === JSON.stringify([...this.mcpApprovalPolicies])) return;
-    this.mcpApprovalPolicies = next;
-    this.states.clear();
-  }
 
   async refresh(now = Date.now()): Promise<CodexTask[]> {
     if (!this.sessionFiles.length || now - this.lastScanAt >= RESCAN_INTERVAL_MS) await this.scan(now);
@@ -81,7 +63,7 @@ export class CodexLocalActivityReader {
         const state = await this.updateState(file, info.size);
         const updatedAt = Math.max(info.mtimeMs, state.lastEventAt);
         const recentlyWritten = now - info.mtimeMs <= ACTIVE_WRITE_WINDOW_MS;
-        const status: CodexTaskStatus = state.awaitingPlanConfirmation || state.pendingApprovalCallIds.size > 0 ? "waiting-input"
+        const status: CodexTaskStatus = state.awaitingPlanConfirmation ? "waiting-input"
           : state.openTurn && recentlyWritten
             ? state.lastActivity?.kind === "approval" && state.lastActivity.phase !== "completed" ? "waiting-input" : "processing"
             : state.terminalStatus || "idle";
@@ -123,7 +105,6 @@ export class CodexLocalActivityReader {
         carry: "",
         meta,
         openTurn: false,
-        pendingApprovalCallIds: new Set(),
         lastEventAt: 0
       };
       Object.assign(state, await readLastLifecycle(file, size));
@@ -132,7 +113,7 @@ export class CodexLocalActivityReader {
       const usable = start > 0 ? chunk.slice(Math.max(0, chunk.indexOf("\n") + 1)) : chunk;
       const { lines, carry } = completeJsonLines(usable);
       state.carry = carry;
-      applyLocalSessionLines(state, lines, this.mcpApprovalPolicies);
+      applyLocalSessionLines(state, lines);
       state.size = size;
       this.states.set(file, state);
       return state;
@@ -142,7 +123,7 @@ export class CodexLocalActivityReader {
       const text = state.carry + appended;
       const { lines, carry } = completeJsonLines(text);
       state.carry = carry;
-      applyLocalSessionLines(state, lines, this.mcpApprovalPolicies);
+      applyLocalSessionLines(state, lines);
       state.size = size;
     }
     return state;
@@ -177,14 +158,13 @@ export function parseLocalSessionLines(lines: string[]): ParsedLocalEventState {
     carry: "",
     meta: { threadId: "fixture" },
     openTurn: false,
-    pendingApprovalCallIds: new Set(),
     lastEventAt: 0
   };
-  applyLocalSessionLines(state, lines, new Map());
+  applyLocalSessionLines(state, lines);
   return state;
 }
 
-function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprovalPolicies: Map<string, McpApprovalPolicy>) {
+function applyLocalSessionLines(state: SessionState, lines: string[]) {
   for (const line of lines) {
     if (!line.trim()) continue;
     let record: any;
@@ -209,7 +189,6 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
         state.startedAt = normalizeTimestamp(payload.started_at) || at;
         state.terminalStatus = undefined;
         state.awaitingPlanConfirmation = false;
-        state.pendingApprovalCallIds.clear();
         state.lastActivity = { kind: "user-message", phase: "completed", at, itemId: state.turnId };
         state.emotionHint = "receiving";
         continue;
@@ -219,7 +198,6 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
         state.turnId = payload.turn_id || state.turnId;
         if (payload.error != null) {
           state.awaitingPlanConfirmation = false;
-          state.pendingApprovalCallIds.clear();
           state.terminalStatus = "error";
           state.lastActivity = { kind: "error", phase: "failed", at, itemId: state.turnId };
           state.emotionHint = "error";
@@ -231,7 +209,6 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
           continue;
         }
         state.terminalStatus = "completed";
-        state.pendingApprovalCallIds.clear();
         state.lastActivity = { kind: "agent-output", phase: "completed", at, itemId: state.turnId };
         state.emotionHint = "completed";
         continue;
@@ -239,7 +216,6 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
       if (/aborted|interrupted|cancelled|canceled|stopped/.test(type)) {
         state.openTurn = false;
         state.awaitingPlanConfirmation = false;
-        state.pendingApprovalCallIds.clear();
         state.terminalStatus = "stopped";
         state.emotionHint = "stopped";
         continue;
@@ -247,7 +223,6 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
       if (/error|failed|panic/.test(type)) {
         state.openTurn = false;
         state.awaitingPlanConfirmation = false;
-        state.pendingApprovalCallIds.clear();
         state.terminalStatus = "error";
         state.lastActivity = { kind: "error", phase: "failed", at, itemId: payload.item_id };
         state.emotionHint = "error";
@@ -255,7 +230,6 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
       }
       if (type === "user_message") {
         state.awaitingPlanConfirmation = false;
-        state.pendingApprovalCallIds.clear();
         state.terminalStatus = "completed";
         state.lastActivity = { kind: "user-message", phase: "completed", at, itemId: state.turnId };
         state.emotionHint = "receiving";
@@ -267,66 +241,18 @@ function applyLocalSessionLines(state: SessionState, lines: string[], mcpApprova
         continue;
       }
       if (type === "item_started" || type === "item_completed") {
-        applyItemActivity(state, payload.item, type === "item_completed" ? "completed" : "started", at, mcpApprovalPolicies);
+        applyItemActivity(state, payload.item, type === "item_completed" ? "completed" : "started", at);
       }
       continue;
     }
     if (record?.type === "response_item") {
-      const approvalCallId = approvalCallIdForItem(payload, mcpApprovalPolicies);
-      if (approvalCallId) {
-        state.pendingApprovalCallIds.add(approvalCallId);
-        state.lastActivity = { kind: "approval", phase: "started", at, itemId: approvalCallId };
-        state.emotionHint = "waiting";
-        continue;
-      }
-      const completedCallId = String(payload?.call_id || "");
-      if (completedCallId && state.pendingApprovalCallIds.delete(completedCallId)) {
-        state.lastActivity = { kind: "approval", phase: "completed", at, itemId: completedCallId };
-        state.emotionHint = "focus";
-        continue;
-      }
-      applyItemActivity(state, payload, "progress", at, mcpApprovalPolicies);
+      applyItemActivity(state, payload, "progress", at);
     }
   }
 }
 
-function approvalCallIdForItem(item: any, mcpApprovalPolicies: Map<string, McpApprovalPolicy>) {
-  return mcpApprovalCallId(item, mcpApprovalPolicies);
-}
-
-function mcpApprovalCallId(item: any, policies: Map<string, McpApprovalPolicy>) {
-  const identity = mcpToolIdentity(item);
-  if (!identity) return undefined;
-  const policy = policies.get(mcpPolicyKey(identity.server, identity.tool));
-  if (!policy || !mcpPolicyRequiresApproval(policy)) return undefined;
-  return String(item?.call_id || item?.id || "") || undefined;
-}
-
-function mcpToolIdentity(item: any) {
-  const type = String(item?.type || "").replace(/[\s_-]/g, "").toLowerCase();
-  if (type === "mcptoolcall" && item?.server && item?.tool) {
-    return { server: String(item.server), tool: String(item.tool) };
-  }
-  if (!/^(customtoolcall|functioncall)$/.test(type) || String(item?.name || "").toLowerCase() !== "exec") return undefined;
-  const input = typeof item?.input === "string" ? item.input : JSON.stringify(item?.input || {});
-  const match = input.match(/tools\.mcp__([a-z0-9_-]+?)__([a-z0-9_-]+)\s*\(/i);
-  return match ? { server: match[1], tool: match[2] } : undefined;
-}
-
-function mcpPolicyRequiresApproval(policy: McpApprovalPolicy) {
-  if (policy.mode === "prompt") return true;
-  if (policy.readOnly === true) return false;
-  if (policy.destructive === true) return true;
-  if (policy.mode === "approve") return false;
-  return policy.mode === "writes" || policy.mode === "auto";
-}
-
-function mcpPolicyKey(server: string, tool: string) {
-  return `${server.toLowerCase()}\0${tool.toLowerCase()}`;
-}
-
-function applyItemActivity(state: SessionState, item: any, phase: CodexActivitySignal["phase"], at: number, mcpApprovalPolicies: Map<string, McpApprovalPolicy>) {
-  const kind = activityKindForItem(state, item, mcpApprovalPolicies);
+function applyItemActivity(state: SessionState, item: any, phase: CodexActivitySignal["phase"], at: number) {
+  const kind = activityKindForItem(state, item);
   if (!kind) return;
   if (kind === "plan" && phase === "completed") {
     state.awaitingPlanConfirmation = true;
@@ -344,8 +270,7 @@ function applyItemActivity(state: SessionState, item: any, phase: CodexActivityS
   }
 }
 
-function activityKindForItem(state: SessionState, item: any, mcpApprovalPolicies: Map<string, McpApprovalPolicy>): CodexActivityKind | undefined {
-  if (approvalCallIdForItem(item, mcpApprovalPolicies)) return "approval";
+function activityKindForItem(state: SessionState, item: any): CodexActivityKind | undefined {
   const text = `${item?.type || ""} ${item?.name || ""} ${item?.tool || ""}`.replace(/[\s_-]/g, "").toLowerCase();
   if (/requestuserinput|approval|elicitation/.test(text)) return "approval";
   if (/contextcompaction|compact/.test(text)) return "context-compaction";

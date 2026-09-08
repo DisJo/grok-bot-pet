@@ -142,7 +142,7 @@ describe("local Codex activity inference", () => {
     });
   });
 
-  it("reports an MCP tool with an approval-gated policy as waiting", async () => {
+  it("keeps an MCP tool processing while Guardian reviews an approval-gated policy", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -158,13 +158,10 @@ describe("local Codex activity inference", () => {
       })
     ].join("\n") + "\n");
     const reader = new CodexLocalActivityReader([root]);
-    reader.setMcpApprovalPolicies([
-      { server: "codegraph", tool: "codegraph_context", mode: "auto" }
-    ]);
 
     expect((await reader.refresh())[0]).toMatchObject({
-      status: "waiting-input",
-      activity: { kind: "approval", phase: "started", itemId: "call-mcp" }
+      status: "processing",
+      activity: { kind: "command", phase: "progress", itemId: "turn-mcp" }
     });
   });
 
@@ -190,16 +187,10 @@ describe("local Codex activity inference", () => {
         input: `await tools.mcp__node_repl__js({ code: "1 + 1" });`
       })
     ].join("\n") + "\n");
-    const reader = new CodexLocalActivityReader([root]);
-    reader.setMcpApprovalPolicies([
-      { server: "codegraph", tool: "codegraph_explore", mode: "approve" },
-      { server: "node_repl", tool: "js", mode: "auto", readOnly: true }
-    ]);
-
-    expect((await reader.refresh())[0]).toMatchObject({ status: "processing" });
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({ status: "processing" });
   });
 
-  it("leaves MCP approval waiting when the matching tool output arrives", async () => {
+  it("keeps MCP activity processing when the matching tool output arrives", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -219,14 +210,9 @@ describe("local Codex activity inference", () => {
         output: "ok"
       })
     ].join("\n") + "\n");
-    const reader = new CodexLocalActivityReader([root]);
-    reader.setMcpApprovalPolicies([
-      { server: "codegraph", tool: "codegraph_context", mode: "auto" }
-    ]);
-
-    expect((await reader.refresh())[0]).toMatchObject({
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
       status: "processing",
-      activity: { kind: "approval", phase: "completed", itemId: "call-mcp-done" }
+      activity: { kind: "command" }
     });
   });
 
@@ -393,7 +379,7 @@ describe("local Codex activity inference", () => {
     });
   });
 
-  it("requires approval for destructive MCP tools unless they are read-only", async () => {
+  it("does not infer user approval from a destructive MCP call", async () => {
     const root = temporaryRoot();
     const sessions = path.join(root, "sessions", "2026", "09", "02");
     mkdirSync(sessions, { recursive: true });
@@ -407,17 +393,10 @@ describe("local Codex activity inference", () => {
         input: `await tools.mcp__store__delete_record({ id: "1" });`
       })
     ].join("\n") + "\n");
-    const reader = new CodexLocalActivityReader([root]);
-    reader.setMcpApprovalPolicies([
-      { server: "store", tool: "delete_record", mode: "approve", destructive: true }
-    ]);
-
-    expect((await reader.refresh())[0]).toMatchObject({ status: "waiting-input" });
-
-    reader.setMcpApprovalPolicies([
-      { server: "store", tool: "delete_record", mode: "auto", readOnly: true, destructive: true }
-    ]);
-    expect((await reader.refresh())[0]).toMatchObject({ status: "processing" });
+    expect((await new CodexLocalActivityReader([root]).refresh())[0]).toMatchObject({
+      status: "processing",
+      activity: { kind: "command" }
+    });
   });
 
   it("reads an unflushed complete escalated exec record as command activity", async () => {

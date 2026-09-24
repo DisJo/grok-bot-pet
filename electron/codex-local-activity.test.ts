@@ -12,6 +12,58 @@ afterEach(() => {
 });
 
 describe("local Codex activity inference", () => {
+  it("keeps unanswered input requests waiting across quiet logs, other activity, and restart", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, "rollout-user-input.jsonl");
+    const now = Date.now();
+    const timestamp = new Date(now).toISOString();
+    writeFileSync(file, [
+      line(timestamp, "session_meta", { id: "thread-input", source: "vscode" }),
+      line(timestamp, "event_msg", { type: "task_started", turn_id: "turn-input" }),
+      line(timestamp, "response_item", {
+        type: "function_call", id: "item-input", call_id: "call-input", name: "request_user_input", arguments: "{}"
+      }),
+      line(timestamp, "response_item", { type: "reasoning", id: "reasoning-1" }),
+      line(timestamp, "response_item", { type: "function_call_output", call_id: "unrelated", output: "done" })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    for (const [currentReader, at] of [[reader, now], [reader, now + 180_000], [new CodexLocalActivityReader([root]), now + 180_000]] as const) {
+      expect((await currentReader.refresh(at))[0]).toMatchObject({
+        status: "waiting-input", emotionHint: "waiting-input",
+        activity: { kind: "approval", phase: "started", itemId: "call-input" }
+      });
+    }
+    appendFileSync(file, line(timestamp, "response_item", {
+      type: "function_call_output", call_id: "call-input", output: "{\"answers\":{}}"
+    }) + "\n");
+    expect((await reader.refresh(now))[0]).toMatchObject({ status: "processing" });
+    expect((await new CodexLocalActivityReader([root]).refresh(now + 180_000))[0].status).not.toBe("waiting-input");
+  });
+
+  it("resolves only the answered input request and clears waits when the turn ends", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, "rollout-inputs.jsonl");
+    const timestamp = new Date().toISOString();
+    writeFileSync(file, [
+      line(timestamp, "session_meta", { id: "thread-inputs", source: "vscode" }),
+      line(timestamp, "event_msg", { type: "task_started", turn_id: "turn-inputs" }),
+      ...["input-1", "input-2"].map((call_id) => line(timestamp, "response_item", {
+        type: "function_call", call_id, name: "functions.request_user_input", arguments: "{}"
+      })),
+      line(timestamp, "response_item", { type: "function_call_output", call_id: "input-1", output: "{}" })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    expect((await reader.refresh())[0]).toMatchObject({
+      status: "waiting-input", activity: { kind: "approval", itemId: "input-2" }
+    });
+    appendFileSync(file, line(timestamp, "event_msg", { type: "task_complete", turn_id: "turn-inputs" }) + "\n");
+    expect((await reader.refresh())[0]).toMatchObject({ status: "completed" });
+  });
+
   it("tracks an unfinished turn and its latest activity", () => {
     const state = parseLocalSessionLines([
       line("2026-09-01T00:00:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-1", started_at: 1788192000 }),
@@ -441,6 +493,44 @@ describe("local Codex activity inference", () => {
     ]);
     expect(stopped.openTurn).toBe(false);
     expect(stopped.terminalStatus).toBe("stopped");
+  });
+
+  it("keeps a failed command separate from the unfinished turn result", () => {
+    const state = parseLocalSessionLines([
+      line("2026-09-01T00:00:00.000Z", "event_msg", { type: "task_started", turn_id: "turn-1" }),
+      line("2026-09-01T00:00:01.000Z", "event_msg", {
+        type: "item_completed", item: { type: "CommandExecution", id: "command-1", status: "failed" }
+      })
+    ]);
+    expect(state.openTurn).toBe(true);
+    expect(state.lastActivity).toMatchObject({ kind: "command", phase: "failed" });
+    expect(state.terminalStatus).toBeUndefined();
+  });
+
+  it("does not turn a recovered command failure into a task failure when logs go quiet", async () => {
+    const root = temporaryRoot();
+    const sessions = path.join(root, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, "rollout-command-retry.jsonl");
+    const now = Date.now();
+    const timestamp = new Date(now).toISOString();
+    writeFileSync(file, [
+      line(timestamp, "session_meta", { id: "thread-retry", source: "vscode" }),
+      line(timestamp, "event_msg", { type: "task_started", turn_id: "turn-retry" }),
+      line(timestamp, "event_msg", {
+        type: "item_completed", item: { type: "CommandExecution", id: "command-1", status: "failed" }
+      }),
+      line(timestamp, "event_msg", {
+        type: "item_completed", item: { type: "CommandExecution", id: "command-2", status: "completed" }
+      })
+    ].join("\n") + "\n");
+    const reader = new CodexLocalActivityReader([root]);
+    expect((await reader.refresh(now))[0]).toMatchObject({ status: "processing" });
+    for (const currentReader of [reader, new CodexLocalActivityReader([root])]) {
+      expect((await currentReader.refresh(now + 180_000))[0]).toMatchObject({
+        status: "idle", emotionHint: "idle", activity: { kind: "command", phase: "completed" }
+      });
+    }
   });
 
   it("maps any task completion with an error payload to terminal error", () => {

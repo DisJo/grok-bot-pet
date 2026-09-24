@@ -26,6 +26,7 @@ interface SessionState {
   openTurn: boolean;
   terminalStatus?: CodexTaskStatus;
   awaitingPlanConfirmation?: boolean;
+  pendingUserInputs?: Map<string, CodexActivitySignal>;
   lastActivity?: CodexActivitySignal;
   emotionHint?: string;
   lastEventAt: number;
@@ -63,7 +64,8 @@ export class CodexLocalActivityReader {
         const state = await this.updateState(file, info.size);
         const updatedAt = Math.max(info.mtimeMs, state.lastEventAt);
         const recentlyWritten = now - info.mtimeMs <= ACTIVE_WRITE_WINDOW_MS;
-        const status: CodexTaskStatus = state.awaitingPlanConfirmation ? "waiting-input"
+        const pendingInput = state.pendingUserInputs?.values().next().value;
+        const status: CodexTaskStatus = pendingInput || state.awaitingPlanConfirmation ? "waiting-input"
           : state.openTurn && recentlyWritten
             ? state.lastActivity?.kind === "approval" && state.lastActivity.phase !== "completed" ? "waiting-input" : "processing"
             : state.terminalStatus || "idle";
@@ -81,7 +83,7 @@ export class CodexLocalActivityReader {
           startedAt: state.startedAt,
           emotionHint: status === "processing" ? state.emotionHint || "processing" : status,
           emotionHintAt: state.lastEventAt || updatedAt,
-          activity: state.lastActivity
+          activity: pendingInput || state.lastActivity
         });
       } catch {}
     }
@@ -184,6 +186,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
     if (record?.type === "event_msg") {
       const type = String(payload.type || "").toLowerCase();
       if (type === "task_started") {
+        state.pendingUserInputs?.clear();
         state.openTurn = true;
         state.turnId = payload.turn_id || state.turnId;
         state.startedAt = normalizeTimestamp(payload.started_at) || at;
@@ -194,6 +197,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         continue;
       }
       if (type === "task_complete") {
+        state.pendingUserInputs?.clear();
         state.openTurn = false;
         state.turnId = payload.turn_id || state.turnId;
         if (payload.error != null) {
@@ -214,6 +218,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         continue;
       }
       if (/aborted|interrupted|cancelled|canceled|stopped/.test(type)) {
+        state.pendingUserInputs?.clear();
         state.openTurn = false;
         state.awaitingPlanConfirmation = false;
         state.terminalStatus = "stopped";
@@ -221,6 +226,7 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
         continue;
       }
       if (/error|failed|panic/.test(type)) {
+        state.pendingUserInputs?.clear();
         state.openTurn = false;
         state.awaitingPlanConfirmation = false;
         state.terminalStatus = "error";
@@ -252,6 +258,20 @@ function applyLocalSessionLines(state: SessionState, lines: string[]) {
 }
 
 function applyItemActivity(state: SessionState, item: any, phase: CodexActivitySignal["phase"], at: number) {
+  const type = String(item?.type || "").replace(/[_-]/g, "").toLowerCase();
+  const callId = item?.call_id || item?.id;
+  if (type === "functioncall" && /(?:^|\.)request_user_input$/.test(item?.name || "") && callId) {
+    const activity: CodexActivitySignal = { kind: "approval", phase: "started", at, itemId: callId };
+    (state.pendingUserInputs ??= new Map()).set(callId, activity);
+    state.lastActivity = activity;
+    state.emotionHint = "waiting";
+    return;
+  }
+  if (type === "functioncalloutput" && callId && state.pendingUserInputs?.delete(callId)) {
+    state.lastActivity = { kind: "approval", phase: "completed", at, itemId: callId };
+    state.emotionHint = "processing";
+    return;
+  }
   const kind = activityKindForItem(state, item);
   if (!kind) return;
   if (kind === "plan" && phase === "completed") {
@@ -265,7 +285,7 @@ function applyItemActivity(state: SessionState, item: any, phase: CodexActivityS
   const status = String(item?.status || item?.error?.message || "").toLowerCase();
   if (/fail|error|panic|crash/.test(status)) {
     state.lastActivity.phase = "failed";
-    state.terminalStatus = "error";
+    // A failed tool can be retried within the same turn; it is not a task result.
     state.emotionHint = "error";
   }
 }

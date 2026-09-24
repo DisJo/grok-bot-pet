@@ -38,7 +38,6 @@ export class CodexBridge extends EventEmitter {
   private refreshTimer?: NodeJS.Timeout;
   private reconnectTimer?: NodeJS.Timeout;
   private approvalObserverTimer?: NodeJS.Timeout;
-  private approvalPermissionPrompted = false;
   private stopped = false;
   private subscribedThreads = new Set<string>();
   private connecting?: Promise<void>;
@@ -88,9 +87,8 @@ export class CodexBridge extends EventEmitter {
   private pollHostApproval() {
     const observe = this.dependencies.codexApprovalVisible;
     if (!observe) return;
-    const prompt = !this.approvalPermissionPrompted;
-    this.approvalPermissionPrompted = true;
-    const visible = observe(prompt);
+    // Background observation must never trigger a system permission dialog.
+    const visible = observe(false);
     const changed = this.pendingInteractions.setHostVisible(visible === true);
     if (changed) this.emitOverview();
   }
@@ -601,7 +599,8 @@ export function inferPersistedTaskStatus(runtime: any, lastTurn: any, threadUpda
 
 export function selectTasks(tasks: CodexTask[]) {
   const byId = new Map(tasks.map((task) => [task.threadId, task]));
-  const topLevel = tasks.filter((task) => !task.parentThreadId && !/^subagent/i.test(task.sourceKind || ""));
+  const topLevel = tasks.filter((task) => (!task.parentThreadId || task.parentThreadId === task.threadId)
+    && !/^subagent/i.test(task.sourceKind || ""));
   const effective = new Map(topLevel.map((task) => [task.threadId, { ...task }]));
 
   for (const child of tasks) {

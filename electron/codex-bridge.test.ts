@@ -28,7 +28,7 @@ describe("Codex status mapping", () => {
 });
 
 describe("host approval observer", () => {
-  it("prompts once, emits only on host visibility transitions, and stops polling", () => {
+  it("observes silently, emits only on host visibility transitions, and stops polling", () => {
     vi.useFakeTimers();
     try {
       const samples: Array<boolean | undefined> = [undefined, false, true, true, false];
@@ -46,8 +46,7 @@ describe("host approval observer", () => {
       const callsAtStop = promptFlags.length;
       vi.advanceTimersByTime(1_000);
 
-      expect(promptFlags[0]).toBe(true);
-      expect(promptFlags.slice(1).every((value) => value === false)).toBe(true);
+      expect(promptFlags).toEqual([false, false, false, false, false]);
       expect(overviews).toEqual([true, false]);
       expect(promptFlags).toHaveLength(callsAtStop);
     } finally {
@@ -67,11 +66,34 @@ describe("host approval observer", () => {
       bridge.start();
       bridge.start();
       vi.advanceTimersByTime(500);
-      expect(promptFlags).toEqual([true, false]);
+      expect(promptFlags).toEqual([false, false]);
 
       bridge.stop();
       vi.advanceTimersByTime(1_000);
-      expect(promptFlags).toEqual([true, false]);
+      expect(promptFlags).toEqual([false, false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never requests permission on fresh launches or restarts when access is unavailable", () => {
+    vi.useFakeTimers();
+    try {
+      const promptFlags: boolean[] = [];
+      for (let launch = 0; launch < 2; launch += 1) {
+        const bridge = new CodexBridge("/tmp/codex-host-no-permission-test", undefined, {
+          codexApprovalVisible: (prompt) => { promptFlags.push(prompt); return undefined; }
+        });
+        vi.spyOn(bridge, "refresh").mockImplementation(async () => bridge.overview());
+        bridge.start();
+        vi.advanceTimersByTime(500);
+        bridge.stop();
+        bridge.start();
+        vi.advanceTimersByTime(500);
+        bridge.stop();
+        expect(bridge.overview()).toMatchObject({ hasWaiting: false, lastError: undefined });
+      }
+      expect(promptFlags).toEqual([false, false, false, false, false, false, false, false]);
     } finally {
       vi.useRealTimers();
     }
@@ -617,6 +639,17 @@ describe("task priority", () => {
     ]);
     expect(result.activeCount).toBe(1);
     expect(result.recentTasks.map((entry) => entry.threadId)).toEqual(["cli-parent"]);
+  });
+
+  it("counts an active top-level task whose persisted parent points to itself", () => {
+    const result = selectTasks([
+      task("desktop-self-parent", "processing", 10, {
+        sourceKind: "vscode",
+        parentThreadId: "desktop-self-parent"
+      })
+    ]);
+    expect(result.activeCount).toBe(1);
+    expect(result.recentTasks.map((entry) => entry.threadId)).toEqual(["desktop-self-parent"]);
   });
 });
 

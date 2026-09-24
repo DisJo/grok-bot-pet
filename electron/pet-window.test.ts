@@ -35,6 +35,15 @@ const dragHelpers = petWindow as typeof petWindow & {
     logicalBounds: { x: number; y: number; width: number; height: number },
     targetPosition: { x: number; y: number }
   ) => { x: number; y: number; width: number; height: number };
+  readPetWindowBounds?: (
+    window: {
+      getBounds(): { x: number; y: number; width: number; height: number };
+      getNativeWindowHandle(): Buffer;
+    },
+    nativeBridge: {
+      getWindowFrame(nativeHandle: Buffer): { x: number; y: number; width: number; height: number } | undefined;
+    }
+  ) => { x: number; y: number; width: number; height: number } | undefined;
 };
 
 describe("pet window sizing", () => {
@@ -56,6 +65,25 @@ describe("pet window sizing", () => {
 });
 
 describe("pet dragging", () => {
+  it("refreshes stale logical coordinates from the native window after display topology changes", () => {
+    expect(dragHelpers.readPetWindowBounds).toBeTypeOf("function");
+    const handle = Buffer.from("0000000000000000", "hex");
+    const window = {
+      getBounds: () => ({ x: 100, y: 200, width: 872, height: 872 }),
+      getNativeWindowHandle: () => handle
+    };
+    const nativeBridge = {
+      getWindowFrame: (received: Buffer) => {
+        expect(received).toBe(handle);
+        return { x: -772, y: 80, width: 872, height: 872 };
+      }
+    };
+
+    expect(dragHelpers.readPetWindowBounds?.(window, nativeBridge)).toEqual({
+      x: -772, y: 80, width: 872, height: 872
+    });
+  });
+
   it("finds the visible character from the global pointer without relying on window mouse events", () => {
     expect(dragHelpers.petHitTargetContains).toBeTypeOf("function");
     const bounds = { x: 100, y: 200, width: 872, height: 872 };

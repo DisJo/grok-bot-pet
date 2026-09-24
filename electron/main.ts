@@ -6,7 +6,7 @@ import { CodexBridge } from "./codex-bridge";
 import { CodexOverview, PetSettings } from "./types";
 import { DEFAULT_SETTINGS, normalizeSettings } from "./settings";
 import { EMPTY_CODEX_OVERVIEW } from "./defaults";
-import { isFinitePoint, movePetWindow, petHitTargetContains, petMovementBounds, petOffsetForCenter, petWindowPositionForCenter, petWindowSize, settingsWindowBounds, type PetBounds, type PetPoint } from "./pet-window";
+import { isFinitePoint, movePetWindow, petHitTargetContains, petMovementBounds, petOffsetForCenter, petWindowPositionForCenter, petWindowSize, readPetWindowBounds, settingsWindowBounds, type PetBounds, type PetPoint } from "./pet-window";
 import { AppLocale, localizedCopy, resolveAppLocale } from "./localization";
 import { NativeWindowBridge } from "./native-window-bridge";
 
@@ -139,6 +139,22 @@ function setPetHitTarget(active: boolean) {
   win.setIgnoreMouseEvents(!active, { forward: true });
 }
 
+function syncPetWindowBoundsAfterDisplayChange() {
+  if (!win || win.isDestroyed()) return;
+  const bounds = readPetWindowBounds(win, nativeWindowBridge);
+  if (!bounds) return;
+  petWindowLogicalBounds = bounds;
+  const cursor = screen.getCursorScreenPoint();
+  setPetHitTarget(Boolean(dragState) || petHitTargetContains(cursor, bounds, petOffset, settings.characterSize));
+}
+
+function watchDisplayChanges() {
+  const scheduleSync = () => setTimeout(syncPetWindowBoundsAfterDisplayChange, 0);
+  screen.on("display-added", scheduleSync);
+  screen.on("display-removed", scheduleSync);
+  screen.on("display-metrics-changed", scheduleSync);
+}
+
 function startPointerTracking() {
   if (pointerTimer) clearInterval(pointerTimer);
   pointerTimer = setInterval(() => {
@@ -223,10 +239,10 @@ function truncate(value: string, limit: number) { return value.length > limit ? 
 app.whenReady().then(async () => {
   app.setActivationPolicy("accessory");
   app.dock?.hide();
-  appLocale = resolveAppLocale(app.getLocale());
+  appLocale = resolveAppLocale(app.getPreferredSystemLanguages()[0] || app.getLocale());
   await loadSettings();
   app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
-  createWindow(); createTray(); startPointerTracking();
+  createWindow(); createTray(); watchDisplayChanges(); startPointerTracking();
   bridge = new CodexBridge(undefined, localizedCopy(appLocale).data, {
     codexApprovalVisible: (promptForPermission) => nativeWindowBridge.codexApprovalVisible(promptForPermission)
   }); bridge.start();

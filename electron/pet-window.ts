@@ -12,6 +12,19 @@ export interface NativeWindowMover {
   getWindowFrame?(nativeHandle: Buffer): PetBounds | undefined;
 }
 
+export function readPetWindowBounds(window: MovablePetWindowLike, nativeBridge: NativeWindowMover) {
+  try {
+    const nativeBounds = nativeBridge.getWindowFrame?.(window.getNativeWindowHandle());
+    if (nativeBounds && isFiniteBounds(nativeBounds)) return nativeBounds;
+  } catch {}
+  try {
+    const reportedBounds = window.getBounds();
+    return isFiniteBounds(reportedBounds) ? reportedBounds : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function petWindowSize(characterSize: number) {
   const size = Math.min(320, Math.max(64, Math.round(characterSize)));
   const scale = size / 270;
